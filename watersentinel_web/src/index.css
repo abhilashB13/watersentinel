@@ -46,23 +46,37 @@ a { color: var(--color-primary); text-decoration: none; }
   flex-direction: column;
 }
 
-@media (min-width: 500px) {
-  .app-shell {
-    box-shadow: var(--shadow-md);
-    margin: 16px auto;
-    min-height: calc(100vh - 32px);
-    border-radius: var(--radius);
-    overflow: hidden;
-  }
+/* ── Brand Banner ── */
+.brand-banner {
+  background: var(--color-primary);
+  padding: 14px 24px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  position: sticky;
+  top: 0;
+  z-index: 200;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+  flex-shrink: 0;
 }
 
-/* ── TOP Navigation ── */
+.brand-banner-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.brand-logo { font-size: 32px; }
+.brand-name { font-size: 20px; font-weight: 700; color: #FFFFFF; line-height: 1.2; }
+.brand-tagline { font-size: 12px; color: var(--color-primary-light); margin-top: 2px; }
+
+/* ── TOP Navigation — larger icons ── */
 .top-nav {
   display: flex;
   background: white;
-  border-bottom: 1px solid var(--color-border);
-  height: 52px;
-  box-shadow: 0 2px 4px rgba(0,0,0,0.08);
+  border-bottom: 2px solid var(--color-border);
+  height: 64px;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.06);
   position: sticky;
   top: 0;
   z-index: 100;
@@ -75,30 +89,29 @@ a { color: var(--color-primary); text-decoration: none; }
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 1px;
+  gap: 3px;
   color: var(--color-text-muted);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 500;
   transition: color 0.15s;
   position: relative;
 }
 
-.nav-item.active {
-  color: var(--color-primary);
-}
+.nav-item.active { color: var(--color-primary); }
 
 .nav-item.active::after {
   content: '';
   position: absolute;
   bottom: 0;
-  left: 20%;
-  right: 20%;
-  height: 2px;
+  left: 15%;
+  right: 15%;
+  height: 3px;
   background: var(--color-primary);
-  border-radius: 2px 2px 0 0;
+  border-radius: 3px 3px 0 0;
 }
 
-.nav-icon { font-size: 18px; }
+/* Larger nav icons */
+.nav-icon { font-size: 24px; }
 
 /* ── App Content ── */
 .app-content {
@@ -106,16 +119,6 @@ a { color: var(--color-primary); text-decoration: none; }
   overflow-y: auto;
   padding-bottom: 20px;
 }
-
-/* ── Header ── */
-.header {
-  background: var(--color-primary);
-  padding: 16px 20px;
-  color: white;
-}
-
-.header-title { font-size: 20px; font-weight: 700; }
-.header-subtitle { font-size: 12px; color: var(--color-primary-light); margin-top: 2px; }
 
 /* ── Cards ── */
 .card {
@@ -145,6 +148,7 @@ a { color: var(--color-primary); text-decoration: none; }
   text-align: center;
   transition: background 0.15s;
   display: block;
+  cursor: pointer;
 }
 
 .btn-primary:hover { background: var(--color-primary-dark); }
@@ -160,6 +164,7 @@ a { color: var(--color-primary); text-decoration: none; }
   background: transparent;
   display: block;
   text-align: center;
+  cursor: pointer;
 }
 
 /* ── Form elements ── */
@@ -181,11 +186,7 @@ a { color: var(--color-primary); text-decoration: none; }
 textarea.text-input { min-height: 80px; resize: vertical; }
 
 /* ── Source grid ── */
-.source-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
-}
+.source-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 
 .source-card {
   border: 2px solid var(--color-border);
@@ -202,7 +203,7 @@ textarea.text-input { min-height: 80px; resize: vertical; }
   background: #E3F2FD;
 }
 
-.source-icon { font-size: 24px; display: block; margin-bottom: 4px; }
+.source-icon { font-size: 32px; display: block; margin-bottom: 6px; }
 .source-label { font-size: 12px; color: #555; }
 .source-card.selected .source-label { color: var(--color-primary); font-weight: 600; }
 
@@ -270,8 +271,32 @@ textarea.text-input { min-height: 80px; resize: vertical; }
 }
 
 /* ── Map ── */
-.map-container { height: 450px; width: 100%; position: relative; }
+.map-container { height: 420px; width: 100%; position: relative; }
 .leaflet-container { height: 100%; width: 100%; }
+
+/* Slim map metadata bar — replaces the old blue header */
+.map-meta-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: #FFFFFF;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--color-border);
+  font-size: 13px;
+}
+
+.map-meta-location {
+  font-weight: 600;
+  color: #1A237E;
+}
+
+.map-meta-updated {
+  font-size: 12px;
+  color: var(--color-text-muted);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
 
 .map-legend-wrapper {
   position: absolute;
@@ -290,6 +315,28 @@ textarea.text-input { min-height: 80px; resize: vertical; }
 }
 
 .map-legend b { display: block; margin-bottom: 4px; }
+
+/* ── Stats bar — used on Home page hero ── */
+.hero-stats {
+  display: flex;
+  padding: 16px 20px 20px;
+  background: transparent;
+}
+
+.hero-stat-item {
+  flex: 1;
+  text-align: center;
+}
+
+.hero-stat-icon { font-size: 22px; display: block; margin-bottom: 4px; }
+.hero-stat-value { font-size: 22px; font-weight: 800; color: white; line-height: 1; }
+.hero-stat-label { font-size: 11px; color: rgba(255,255,255,0.75); margin-top: 3px; }
+
+.hero-stat-divider {
+  width: 1px;
+  background: rgba(255,255,255,0.25);
+  margin: 4px 0;
+}
 
 /* ── Utility ── */
 .text-muted { color: var(--color-text-muted); font-size: 12px; }

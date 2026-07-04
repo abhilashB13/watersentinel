@@ -91,7 +91,7 @@ OUTPUT FORMAT for water_profile session state:
 
 water_profiler_agent = LlmAgent(
     name="WaterProfiler",
-    model="gemini-2.0-flash",
+    model="gemini-2.0-flash-lite",
     description=(
         "RAG-powered water quality diagnosis specialist. Retrieves relevant "
         "chunks from BIS IS 10500, WHO guidelines, and CGWB regional data "

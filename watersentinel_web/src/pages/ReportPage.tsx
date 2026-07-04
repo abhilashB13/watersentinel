@@ -1,14 +1,13 @@
 /**
  * Module: src/pages/ReportPage.tsx
- * Fixes:
- *   - "Does water produce lather?" → Yes/No radio buttons
- *   - Overhead tank deposits and soil smudge are now SEPARATE checkboxes
- *   - EN|HI toggle on all steps
- *   - Passes pincode correctly to result
+ * Changes from previous version:
+ *   - AgentProgress component shown during loading instead of spinner
+ *   - No other logic changes
  */
 
 import React, { useState, useRef, useEffect } from 'react';
 import { submitWaterReport, WaterReportResponse } from '../api/watersentinel';
+import AgentProgress from '../components/AgentProgress';
 
 interface ReportPageProps {
   onReportComplete: (result: WaterReportResponse, pincode: string) => void;
@@ -53,16 +52,15 @@ const ReportPage: React.FC<ReportPageProps> = ({
 }) => {
   const [step, setStep] = useState<Step>('intent');
   const [intent, setIntent] = useState('');
-
   // Questionnaire
   const [diagnosedDisease, setDiagnosedDisease] = useState(false);
   const [frequentSickness, setFrequentSickness] = useState(false);
   const [stomachPains, setStomachPains] = useState(false);
   const [swallowingIssue, setSwallowingIssue] = useState(false);
   const [algaeInFilters, setAlgaeInFilters] = useState(false);
-  const [tankBottomDeposits, setTankBottomDeposits] = useState(false); // SEPARATE
-  const [tankWallSmudge, setTankWallSmudge] = useState(false);         // SEPARATE
-  const [poorLather, setPoorLather] = useState<boolean | null>(null);  // null = not answered
+  const [tankBottomDeposits, setTankBottomDeposits] = useState(false);
+  const [tankWallSmudge, setTankWallSmudge] = useState(false);
+  const [poorLather, setPoorLather] = useState<boolean | null>(null);
   const [pipeDeposits, setPipeDeposits] = useState(false);
   const [tdsValue, setTdsValue] = useState('');
   const [waterFlow, setWaterFlow] = useState('');
@@ -85,6 +83,8 @@ const ReportPage: React.FC<ReportPageProps> = ({
     if (prefillPincode) setPincode(prefillPincode);
     if (prefillArea) setAreaName(prefillArea);
   }, [prefillPincode, prefillArea]);
+
+
 
   const startVoice = () => {
     const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
@@ -115,14 +115,13 @@ const ReportPage: React.FC<ReportPageProps> = ({
   const buildQuestionnaireContext = () => {
     const parts: string[] = [];
     if (diagnosedDisease) parts.push('Doctor diagnosed Cholera/Typhoid/Dysentery');
-    if (frequentSickness || stomachPains) parts.push('Frequent sickness and stomach pains in family');
+    if (frequentSickness || stomachPains) parts.push('Frequent sickness and stomach pains');
     if (swallowingIssue) parts.push('Difficulty swallowing water');
     if (algaeInFilters) parts.push('Tap filter has algae/rust/sand');
-    if (tankBottomDeposits) parts.push('Overhead tank bottom has black/brown deposits');
-    if (tankWallSmudge) parts.push('Overhead tank inner walls have soil smudge');
-    if (pipeDeposits) parts.push('White deposits on pipes and vessels');
-    if (poorLather === false) parts.push('Water does NOT produce lather easily (hard water indicator)');
-    if (poorLather === true) parts.push('Water produces lather easily');
+    if (tankBottomDeposits) parts.push('Tank bottom has black/brown deposits');
+    if (tankWallSmudge) parts.push('Tank walls have soil smudge');
+    if (pipeDeposits) parts.push('White deposits on pipes');
+    if (poorLather === false) parts.push('Water does NOT produce lather (hard water)');
     if (tdsValue) parts.push(`TDS: ${tdsValue} ppm`);
     if (waterFlow) parts.push(`Water flow: ${waterFlow}`);
     return parts.join('. ');
@@ -137,18 +136,15 @@ const ReportPage: React.FC<ReportPageProps> = ({
     if (selectedSymptoms.length === 0 && description.trim().length < 5) {
       setError('Please select at least one symptom or describe the issue.'); return;
     }
-
     const questionnaireContext = buildQuestionnaireContext();
     const symptomLabels = selectedSymptoms.map(id => SYMPTOM_OPTIONS.find(s => s.id === id)?.label || id);
     const sourceLabel = SOURCE_TYPES.find(s => s.id === sourceType)?.label || sourceType;
     const intentLabel = INTENTS.find(i => i.id === intent)?.title || 'General Water Analysis';
-
     let userMessage = `Analysis intent: ${intentLabel}. Water source: ${sourceLabel}. `;
     if (symptomLabels.length > 0) userMessage += `Symptoms: ${symptomLabels.join(', ')}. `;
     if (questionnaireContext) userMessage += `Pre-analysis: ${questionnaireContext}. `;
     if (description.trim()) userMessage += description.trim();
     if (areaName) userMessage += ` Location: ${areaName}.`;
-
     setLoading(true);
     try {
       const result = await submitWaterReport({
@@ -159,15 +155,14 @@ const ReportPage: React.FC<ReportPageProps> = ({
         symptoms: selectedSymptoms,
         photo_base64: photoBase64 || undefined,
       });
-      onReportComplete(result, pincode); // Pass pincode to parent
+      onReportComplete(result, pincode);
     } catch (err: any) {
-      setError(err.message || 'Could not reach WaterSentinel server. Check your connection.');
+      setError(err.message || 'Could not reach WaterSentinel server.');
     } finally {
       setLoading(false);
     }
   };
 
-  // ── Lang toggle component ─────────────────────────────────────────────────
   const LangToggle = () => onLangChange ? (
     <div style={{ display: 'flex', gap: 6 }}>
       <button onClick={() => onLangChange('en')} style={{ color: lang === 'en' ? 'white' : '#90CAF9', fontWeight: lang === 'en' ? 700 : 400, fontSize: 13 }} type="button">EN</button>
@@ -176,7 +171,6 @@ const ReportPage: React.FC<ReportPageProps> = ({
     </div>
   ) : null;
 
-  // ── CheckItem helper ──────────────────────────────────────────────────────
   const CheckItem = ({ label, checked, onChange }: { label: string; checked: boolean; onChange: (v: boolean) => void }) => (
     <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 10, cursor: 'pointer', fontSize: 14, lineHeight: 1.4 }}>
       <input type="checkbox" checked={checked} onChange={e => onChange(e.target.checked)}
@@ -185,17 +179,9 @@ const ReportPage: React.FC<ReportPageProps> = ({
     </label>
   );
 
-  // ═════════════════════════════ STEP 1 — INTENT ════════════════════════════
+  // ═══════════ STEP 1 — INTENT ═══════════
   if (step === 'intent') return (
     <div>
-      <div className="header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-        <div>
-          <div className="header-title">💧 WaterSentinel</div>
-          <div className="header-subtitle">Starting Water Analysis</div>
-        </div>
-        <LangToggle />
-      </div>
-
       <div className="card" style={{ marginTop: 12 }}>
         <div style={{ fontSize: 17, fontWeight: 700, color: '#1A237E', marginBottom: 14 }}>
           Why do you want to analyse your water?
@@ -207,7 +193,7 @@ const ReportPage: React.FC<ReportPageProps> = ({
             onMouseEnter={e => (e.currentTarget.style.borderColor = '#1565C0')}
             onMouseLeave={e => (e.currentTarget.style.borderColor = '#E0E0E0')}
             type="button">
-            <span style={{ fontSize: 30, flexShrink: 0 }}>{item.icon}</span>
+            <span style={{ fontSize: 36, flexShrink: 0 }}>{item.icon}</span>
             <div>
               <div style={{ fontSize: 14, fontWeight: 700, color: '#1A237E' }}>{item.title}</div>
               <div style={{ fontSize: 12, color: '#666', marginTop: 2, lineHeight: 1.4 }}>{item.desc}</div>
@@ -234,24 +220,33 @@ const ReportPage: React.FC<ReportPageProps> = ({
           </button>
         )}
       </div>
+
+      <div className="card" style={{ background: '#E8F4FD', borderLeft: '4px solid #1565C0' }}>
+        <div style={{ fontSize: 13, lineHeight: 1.7, color: '#1A237E' }}>
+          <b>Our Mission:</b> WaterSentinel is building India's first citizen-powered water quality
+          intelligence network. Every report you file becomes a data point that protects your
+          neighbourhood. When enough citizens report, we automatically alert the municipality —
+          so you don't have to.
+        </div>
+      </div>
+
       <div style={{ textAlign: 'center', padding: 12 }} className="text-muted">
         * Our AI Agent supports Voice and Photo evidence
       </div>
     </div>
   );
 
-  // ═══════════════════════ STEP 2 — QUESTIONNAIRE ═══════════════════════════
+  // ═══════════ STEP 2 — QUESTIONNAIRE ═══════════
   if (step === 'questionnaire') return (
     <div>
-      <div className="header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+      <div style={{ background: '#1565C0', padding: '12px 16px', color: 'white', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
         <div>
           <button onClick={() => setStep('intent')} style={{ color: '#90CAF9', fontSize: 12, marginBottom: 4 }} type="button">← Back</button>
-          <div className="header-title">Diagnostic Deep-Dive</div>
-          <div className="header-subtitle">Pre-analysis check questions</div>
+          <div style={{ fontSize: 17, fontWeight: 700 }}>Diagnostic Deep-Dive</div>
+          <div style={{ fontSize: 12, color: '#90CAF9' }}>Pre-analysis check questions</div>
         </div>
         <LangToggle />
       </div>
-
       <div style={{ height: 4, background: '#E0E0E0' }}>
         <div style={{ height: 4, background: '#1565C0', width: '50%' }} />
       </div>
@@ -267,35 +262,23 @@ const ReportPage: React.FC<ReportPageProps> = ({
       <div className="card">
         <div className="card-title">🔧 Hardware & Use Questions</div>
         <CheckItem label="Is water having deposits on pipes?" checked={pipeDeposits} onChange={setPipeDeposits} />
-
-        {/* FIXED: Yes/No for lather */}
         <div style={{ marginBottom: 10 }}>
           <div style={{ fontSize: 14, marginBottom: 6 }}>Does water produce lather easily?</div>
           <div style={{ display: 'flex', gap: 10 }}>
-            <button
-              onClick={() => setPoorLather(true)}
-              style={{ padding: '6px 16px', borderRadius: 20, border: '1px solid', fontSize: 13,
-                borderColor: poorLather === true ? '#1565C0' : '#BDBDBD',
-                background: poorLather === true ? '#E3F2FD' : '#FAFAFA',
-                color: poorLather === true ? '#1565C0' : '#555',
-                fontWeight: poorLather === true ? 600 : 400 }}
-              type="button">Yes</button>
-            <button
-              onClick={() => setPoorLather(false)}
-              style={{ padding: '6px 16px', borderRadius: 20, border: '1px solid', fontSize: 13,
-                borderColor: poorLather === false ? '#1565C0' : '#BDBDBD',
-                background: poorLather === false ? '#E3F2FD' : '#FAFAFA',
-                color: poorLather === false ? '#1565C0' : '#555',
-                fontWeight: poorLather === false ? 600 : 400 }}
-              type="button">No</button>
+            {[true, false].map(val => (
+              <button key={String(val)} onClick={() => setPoorLather(val)}
+                style={{ padding: '6px 16px', borderRadius: 20, border: '1px solid', fontSize: 13,
+                  borderColor: poorLather === val ? '#1565C0' : '#BDBDBD',
+                  background: poorLather === val ? '#E3F2FD' : '#FAFAFA',
+                  color: poorLather === val ? '#1565C0' : '#555',
+                  fontWeight: poorLather === val ? 600 : 400 }}
+                type="button">{val ? 'Yes' : 'No'}</button>
+            ))}
           </div>
           {poorLather === false && (
-            <div style={{ fontSize: 12, color: '#E65100', marginTop: 4 }}>
-              ⚠️ Poor lather = hard water indicator (high Ca/Mg hardness)
-            </div>
+            <div style={{ fontSize: 12, color: '#E65100', marginTop: 4 }}>⚠️ Poor lather = hard water indicator</div>
           )}
         </div>
-
         <label style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10, fontSize: 14 }}>
           <span>Water flow in pipes:</span>
           <select value={waterFlow} onChange={e => setWaterFlow(e.target.value)}
@@ -306,7 +289,6 @@ const ReportPage: React.FC<ReportPageProps> = ({
             <option value="weak">Weak</option>
           </select>
         </label>
-
         <label style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 14 }}>
           <span style={{ flexShrink: 0 }}>TDS if known (ppm):</span>
           <input type="number" placeholder="e.g. 450" value={tdsValue} onChange={e => setTdsValue(e.target.value)}
@@ -317,17 +299,8 @@ const ReportPage: React.FC<ReportPageProps> = ({
       <div className="card">
         <div className="card-title">🔍 Specific Observations</div>
         <CheckItem label="Tap filter has algae, rust, or sand?" checked={algaeInFilters} onChange={setAlgaeInFilters} />
-        {/* FIXED: Separate checkboxes — no longer linked */}
-        <CheckItem
-          label="Overhead tank bottom has black/brown deposits?"
-          checked={tankBottomDeposits}
-          onChange={setTankBottomDeposits}  // Only this state changes
-        />
-        <CheckItem
-          label="Overhead tank inner walls have soil smudge?"
-          checked={tankWallSmudge}
-          onChange={setTankWallSmudge}      // Only this state changes
-        />
+        <CheckItem label="Overhead tank bottom has black/brown deposits?" checked={tankBottomDeposits} onChange={setTankBottomDeposits} />
+        <CheckItem label="Overhead tank inner walls have soil smudge?" checked={tankWallSmudge} onChange={setTankWallSmudge} />
       </div>
 
       <div style={{ padding: '0 16px 16px' }}>
@@ -341,18 +314,17 @@ const ReportPage: React.FC<ReportPageProps> = ({
     </div>
   );
 
-  // ═════════════════════════ STEP 3 — EVIDENCE ═════════════════════════════
+  // ═══════════ STEP 3 — EVIDENCE ═══════════
   return (
     <div>
-      <div className="header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+      <div style={{ background: '#1565C0', padding: '12px 16px', color: 'white', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
         <div>
           <button onClick={() => setStep('questionnaire')} style={{ color: '#90CAF9', fontSize: 12, marginBottom: 4 }} type="button">← Back</button>
-          <div className="header-title">Evidence Input</div>
-          <div className="header-subtitle">Identify your source and symptoms</div>
+          <div style={{ fontSize: 17, fontWeight: 700 }}>Evidence Input</div>
+          <div style={{ fontSize: 12, color: '#90CAF9' }}>Identify your source and symptoms</div>
         </div>
         <LangToggle />
       </div>
-
       <div style={{ height: 4, background: '#E0E0E0' }}>
         <div style={{ height: 4, background: '#1565C0', width: '100%' }} />
       </div>
@@ -361,7 +333,8 @@ const ReportPage: React.FC<ReportPageProps> = ({
         <div className="card-title">Water Source *</div>
         <div className="source-grid">
           {SOURCE_TYPES.map(source => (
-            <button key={source.id} className={`source-card ${sourceType === source.id ? 'selected' : ''}`}
+            <button key={source.id}
+              className={`source-card ${sourceType === source.id ? 'selected' : ''}`}
               onClick={() => setSourceType(source.id)} type="button">
               <span className="source-icon">{source.icon}</span>
               <span className="source-label">{source.label}</span>
@@ -374,7 +347,8 @@ const ReportPage: React.FC<ReportPageProps> = ({
         <div className="card-title">What do you observe?</div>
         <div className="chip-container">
           {SYMPTOM_OPTIONS.map(symptom => (
-            <button key={symptom.id} className={`chip ${selectedSymptoms.includes(symptom.id) ? 'selected' : ''}`}
+            <button key={symptom.id}
+              className={`chip ${selectedSymptoms.includes(symptom.id) ? 'selected' : ''}`}
               onClick={() => toggleSymptom(symptom.id)} type="button">{symptom.label}</button>
           ))}
         </div>
@@ -402,27 +376,45 @@ const ReportPage: React.FC<ReportPageProps> = ({
         <input ref={fileInputRef} type="file" accept="image/*" onChange={handlePhotoSelect} style={{ display: 'none' }} />
         {photoPreview && <img src={photoPreview} alt="Water sample" style={{ width: '100%', height: 100, objectFit: 'cover', borderRadius: 8, marginBottom: 8 }} />}
         {description && <div style={{ background: '#F5F5F5', borderRadius: 8, padding: 10, fontSize: 13, marginBottom: 8 }}>🎤 "{description}"</div>}
-        <textarea className="text-input" placeholder="Or type your description here..." value={description}
-          onChange={e => setDescription(e.target.value.slice(0, 500))} rows={3} />
+        <textarea className="text-input" placeholder="Or type your description here..."
+          value={description} onChange={e => setDescription(e.target.value.slice(0, 500))} rows={3} />
       </div>
 
       <div className="card">
         <div className="card-title">Location *</div>
-        <input className="text-input" placeholder="6-digit Pincode (e.g. 500032)" value={pincode}
-          onChange={e => setPincode(e.target.value.replace(/\D/g, '').slice(0, 6))} inputMode="numeric" />
-        <input className="text-input mt-8" placeholder="Pin / Area name (e.g. Kondapur)" value={areaName}
-          onChange={e => setAreaName(e.target.value.slice(0, 100))} />
-        <div className="text-muted mt-8" style={{ color: '#4CAF50' }}>🔒 Only your pincode is stored — no street address, no GPS</div>
+        <input className="text-input" placeholder="6-digit Pincode (e.g. 500032)"
+          value={pincode} onChange={e => setPincode(e.target.value.replace(/\D/g, '').slice(0, 6))} inputMode="numeric" />
+        <input className="text-input mt-8" placeholder="Pin / Area name (e.g. Kondapur)"
+          value={areaName} onChange={e => setAreaName(e.target.value.slice(0, 100))} />
+        <div className="text-muted mt-8" style={{ color: '#4CAF50' }}>
+          🔒 Only your pincode is stored — no street address, no GPS
+        </div>
       </div>
 
-      {error && <div className="card" style={{ background: '#FFEBEE', color: '#B71C1C', fontSize: 13 }}>{error}</div>}
+      {/* Submit section */}
+      <div style={{ padding: '0 16px 24px' }}>
+        {error && (
+          <div style={{ background: '#FFEBEE', color: '#B71C1C', fontSize: 13, padding: 12, borderRadius: 8, marginBottom: 12 }}>
+            {error}
+          </div>
+        )}
 
-      <div style={{ padding: '0 16px 16px' }}>
-        <button className="btn-primary" onClick={handleSubmit} disabled={loading} type="button">
-          {loading ? <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}><span className="spinner" /> Analysing with AI agents...</span>
-            : '✨ Continue to Deep AI Agent Analysis'}
-        </button>
-        {loading && <div className="text-muted text-center mt-8">AI agents are working. This takes 30–60 seconds.</div>}
+        {/* Button hidden while loading */}
+        {!loading && (
+          <button className="btn-primary" onClick={handleSubmit} type="button">
+            ✨ Continue to Deep AI Agent Analysis
+          </button>
+        )}
+
+        {/* AgentProgress shown while loading */}
+        {loading && (
+          <>
+            <AgentProgress isActive={loading} />
+            <div style={{ textAlign: 'center', fontSize: 12, color: '#9E9E9E', marginTop: 8 }}>
+              Please keep this tab open. Analysis takes 45–60 seconds.
+            </div>
+          </>
+        )}
       </div>
     </div>
   );

@@ -183,7 +183,7 @@ OUTPUT FORMAT for community_status session state:
 
 community_mapper_agent = LlmAgent(
     name="CommunityMapper",
-    model="gemini-2.0-flash",
+    model="gemini-2.0-flash-lite",
     description=(
         "Community intelligence specialist. Uses WaterIntel MCP Store to "
         "submit citizen reports, detect contamination clusters, determine "

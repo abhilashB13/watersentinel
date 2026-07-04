@@ -9,14 +9,6 @@ import React from 'react';
 const AboutPage: React.FC = () => {
   return (
     <div>
-      <div className="header" style={{ textAlign: 'center', padding: '32px 20px' }}>
-        <div style={{ fontSize: 48, marginBottom: 8 }}>💧</div>
-        <div style={{ fontSize: 26, fontWeight: 700 }}>WaterSentinel</div>
-        <div style={{ fontSize: 13, color: '#90CAF9', marginTop: 6 }}>
-          The water quality intelligence map India never had
-        </div>
-      </div>
-
       {/* How It Works */}
       <div className="card">
         <div className="card-title">How It Works</div>

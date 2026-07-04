@@ -89,7 +89,7 @@ The citizen should receive ONE final cohesive response, not 4 separate answers.
 
 root_agent = LlmAgent(
     name="WaterSentinel_Orchestrator",
-    model="gemini-2.0-flash",   
+    model="gemini-2.0-flash-lite",   
     description=(
         "Root orchestrator for WaterSentinel. Coordinates SourceSense, "
         "WaterProfiler, CommunityMapper, and ActionForge agents to analyse "

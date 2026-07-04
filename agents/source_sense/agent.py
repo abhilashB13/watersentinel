@@ -66,7 +66,7 @@ def analyse_water_photo(image_base64: str) -> dict:
         client = genai.Client(api_key=api_key)
 
         response = client.models.generate_content(
-            model="gemini-2.0-flash",
+            model="gemini-2.0-flash-lite",
             contents=[
                 genai_types.Part.from_bytes(data=image_data, mime_type="image/jpeg"),
                 """Analyse this water sample photo for quality indicators.

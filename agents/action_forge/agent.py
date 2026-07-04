@@ -235,7 +235,7 @@ NEVER:
 
 action_forge_agent = LlmAgent(
     name="ActionForge",
-    model="gemini-2.0-flash",
+    model="gemini-2.0-flash-lite",
     description=(
         "Output generation specialist. Produces personal advisory with BIS "
         "citations, municipal complaint via ActionBridge MCP, and map data "

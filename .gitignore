@@ -1,0 +1,47 @@
+# ── Secrets — NEVER commit these ───────────────────────────────────
+.env
+*.key
+*.pem
+
+# ── Runtime data — generated at runtime ─────────────────────────────
+data/
+*.db
+*.log
+
+# ── Python ──────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+
+# ── uv ──────────────────────────────────────────────────────────────
+.uv/
+uv.lock
+
+# ── Node / React Native ─────────────────────────────────────────────
+mobile_app/node_modules/
+mobile_app/.expo/
+mobile_app/dist/
+mobile_app/.env
+
+# ── OS ──────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── IDE ─────────────────────────────────────────────────────────────
+.vscode/settings.json
+.idea/
+*.swp
+
+# ── Docker ──────────────────────────────────────────────────────────
+.dockerignore
+
+# ── ChromaDB ────────────────────────────────────────────────────────
+chroma_db/

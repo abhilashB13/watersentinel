@@ -1,0 +1,48 @@
+[project]
+name = "watersentinel"
+version = "1.0.0"
+description = "Citizen-powered water quality intelligence system for Indian cities"
+requires-python = ">=3.12"
+dependencies = [
+    # Google ADK — core agent framework
+    "google-adk>=2.3.0",
+    # MCP server framework
+    "fastmcp>=2.0.0",
+    # FastAPI backend
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    # RAG — vector store and embeddings
+    "chromadb>=0.5.0",
+    # RAG — document processing
+    "markdown>=3.6",
+    # Image processing — EXIF stripping
+    "Pillow>=10.0.0",
+    # Rate limiting for FastAPI
+    "slowapi>=0.1.9",
+    # Environment variable loading
+    "python-dotenv>=1.0.0",
+    # HTTP client for health checks
+    "httpx>=0.27.0",
+    # Google Generative AI SDK
+    "google-generativeai>=0.1.0",
+    # Data validation
+    "pydantic>=2.7.0",
+    # CORS middleware
+    "starlette>=0.40.0",
+    "requests>=2.34.2",
+    "sentence-transformers>=5.6.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+package = false
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "black>=24.0.0",
+]

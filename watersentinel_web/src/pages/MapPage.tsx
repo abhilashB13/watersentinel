@@ -1,10 +1,12 @@
 /**
  * Module: src/pages/MapPage.tsx
- * Changes:
- *   - Blue header block removed
- *   - Slim white metadata bar: location left, updated time right
- *   - Map height increased to 420px (full width now)
- *   - Area list icons larger
+ * NEW: Source-type dropdown filter — Municipal Pipe / Borewell / Hand Pump / Open Well
+ * When selected, map shows scores for ONLY that source type per area,
+ * revealing cases like "Kondapur municipal water is fine, but Kondapur
+ * borewells have high TDS" — same area, different infrastructure, different score.
+ *
+ * Includes the earlier icon fix: icon reflects actual colour_band,
+ * not a hardcoded green tick for "None detected".
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
@@ -18,7 +20,15 @@ interface MapPageProps {
 const CONTAMINANT_FILTERS = ['All', 'High TDS', 'Iron', 'H2S', 'Fecal Coliform'];
 const TIME_FILTERS = ['Today', 'Last 7d', 'Last 30d'];
 
-function getContaminantDisplay(contaminant: string): { icon: string; color: string } {
+const SOURCE_FILTERS = [
+  { id: 'all', label: 'All Sources', icon: '💧' },
+  { id: 'municipal_pipeline', label: 'Municipal Pipe', icon: '🚰' },
+  { id: 'borewell', label: 'Borewell', icon: '⛏️' },
+  { id: 'hand_pump', label: 'Hand Pump', icon: '💧' },
+  { id: 'open_well', label: 'Open Well', icon: '🪣' },
+];
+
+function getContaminantDisplay(contaminant: string, colourBand?: string): { icon: string; color: string } {
   const c = (contaminant || '').toLowerCase();
   if (c.includes('h2s') || c.includes('sulph') || c.includes('egg')) return { icon: '💨', color: '#7B1FA2' };
   if (c.includes('iron') || c.includes('fe')) return { icon: '🟤', color: '#E65100' };
@@ -26,7 +36,13 @@ function getContaminantDisplay(contaminant: string): { icon: string; color: stri
   if (c.includes('fluoride')) return { icon: '⚗️', color: '#2E7D32' };
   if (c.includes('sewage') || c.includes('coliform')) return { icon: '🚨', color: '#B71C1C' };
   if (c.includes('nitrate')) return { icon: '🌾', color: '#F57F17' };
-  if (c.includes('none') || c === '') return { icon: '✅', color: '#2E7D32' };
+  if (c.includes('none') || c === '') {
+    if (colourBand === 'green') return { icon: '✅', color: '#2E7D32' };
+    if (colourBand === 'yellow') return { icon: '🟡', color: '#F9A825' };
+    if (colourBand === 'orange') return { icon: '🟠', color: '#E65100' };
+    if (colourBand === 'red') return { icon: '🔴', color: '#B71C1C' };
+    return { icon: '💧', color: '#1565C0' };
+  }
   return { icon: '💧', color: '#1565C0' };
 }
 
@@ -46,6 +62,16 @@ const ScoreBar: React.FC<{ score: number; colour: string }> = ({ score, colour }
   );
 };
 
+const getSourceAction = (contaminant: string): string => {
+  const c = (contaminant || '').toLowerCase();
+  if (c.includes('h2s') || c.includes('sulph')) return 'Water Softener Plant: Testing scheduled';
+  if (c.includes('iron')) return 'Iron Removal Plant: Inspection requested';
+  if (c.includes('tds')) return 'RO Treatment Unit: Feasibility study underway';
+  if (c.includes('sewage') || c.includes('coliform')) return 'Pipeline Repair: Emergency crew dispatched';
+  if (c.includes('fluoride')) return 'Defluoridation Plant: Under evaluation';
+  return 'Pipeline repair under review';
+};
+
 const MapPage: React.FC<MapPageProps> = ({ onReportFromMap }) => {
   const [topologyData, setTopologyData] = useState<TopologyPoint[]>([]);
   const [loading, setLoading] = useState(true);
@@ -53,10 +79,12 @@ const MapPage: React.FC<MapPageProps> = ({ onReportFromMap }) => {
   const [lastUpdated, setLastUpdated] = useState('');
   const [contaminantFilter, setContaminantFilter] = useState('All');
   const [timeFilter, setTimeFilter] = useState('Today');
+  const [sourceFilter, setSourceFilter] = useState('all');
 
-  const loadTopology = useCallback(async () => {
+  const loadTopology = useCallback(async (source: string = sourceFilter) => {
+    setLoading(true);
     try {
-      const data = await getTopologyData();
+      const data = await getTopologyData(source);
       setTopologyData(data);
       setLastUpdated(new Date().toLocaleTimeString());
     } catch (err) {
@@ -64,12 +92,17 @@ const MapPage: React.FC<MapPageProps> = ({ onReportFromMap }) => {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [sourceFilter]);
 
-  useEffect(() => { loadTopology(); }, [loadTopology]);
+  useEffect(() => { loadTopology(sourceFilter); }, [sourceFilter]);
+
+  const handleSourceChange = (source: string) => {
+    setSourceFilter(source);
+    setSelectedArea(null); // clear selection when switching source view
+  };
 
   const handlePincodeSelected = (pincode: string, areaName: string) => {
-    const point = topologyData.find(p => p.pincode === pincode);
+    const point = topologyData.find(p => p.pincode === pincode && p.area_name === areaName);
     if (point) setSelectedArea(point);
   };
 
@@ -85,45 +118,32 @@ const MapPage: React.FC<MapPageProps> = ({ onReportFromMap }) => {
 
   const authorityAlerts = topologyData
     .filter(p => p.colour_band === 'red' && p.report_count >= 2)
-    .slice(0, 2)
-    .map(p => ({
-      area: p.area_name,
-      action: (p.primary_contaminant || '').includes('H2S')
-        ? 'Water Softener Plant: Testing scheduled'
-        : 'Pipeline repair under review',
-    }));
+    .slice(0, 3)
+    .map(p => ({ area: p.area_name, action: getSourceAction(p.primary_contaminant || '') }));
+
+  const currentSourceLabel = SOURCE_FILTERS.find(s => s.id === sourceFilter)?.label || 'All Sources';
 
   return (
     <div>
 
-      {/* ── Slim white metadata bar — replaces old blue header ── */}
+      {/* Slim metadata bar */}
       <div className="map-meta-bar">
         <div>
           <div className="map-meta-location">🗺️ Hyderabad — Citizen Reports</div>
           <div style={{ display: 'flex', gap: 16, marginTop: 4 }}>
-            <span style={{ fontSize: 12, color: '#555' }}>
-              📍 <b style={{ color: '#1A237E' }}>{topologyData.length}</b> Areas
-            </span>
-            <span style={{ fontSize: 12, color: '#555' }}>
-              🔴 <b style={{ color: '#B71C1C' }}>{redCount}</b> Critical
-            </span>
-            <span style={{ fontSize: 12, color: '#555' }}>
-              📊 <b style={{ color: '#1A237E' }}>{totalReports}</b> Reports
-            </span>
+            <span style={{ fontSize: 12, color: '#555' }}>📍 <b style={{ color: '#1A237E' }}>{topologyData.length}</b> Areas</span>
+            <span style={{ fontSize: 12, color: '#555' }}>🔴 <b style={{ color: '#B71C1C' }}>{redCount}</b> Critical</span>
+            <span style={{ fontSize: 12, color: '#555' }}>📊 <b style={{ color: '#1A237E' }}>{totalReports}</b> Reports</span>
           </div>
         </div>
         <div className="map-meta-updated">
           {lastUpdated && <span>Updated: {lastUpdated}</span>}
-          <button onClick={loadTopology} style={{ fontSize: 18, color: '#1565C0' }} type="button">↻</button>
+          <button onClick={() => loadTopology(sourceFilter)} style={{ fontSize: 18, color: '#1565C0' }} type="button">↻</button>
         </div>
       </div>
 
       {/* Community Health Alert Bar */}
-      <div style={{
-        background: '#FFF8E1', padding: '10px 16px',
-        borderBottom: '1px solid #FFE082',
-        display: 'flex', alignItems: 'center', gap: 10,
-      }}>
+      <div style={{ background: '#FFF8E1', padding: '10px 16px', borderBottom: '1px solid #FFE082', display: 'flex', alignItems: 'center', gap: 10 }}>
         <span style={{ fontSize: 20 }}>🔔</span>
         <div style={{ flex: 1 }}>
           <div style={{ fontSize: 13, fontWeight: 600, color: '#F57F17' }}>Community Health Alert Bar</div>
@@ -132,17 +152,45 @@ const MapPage: React.FC<MapPageProps> = ({ onReportFromMap }) => {
         <span style={{ fontSize: 20 }}>🔕</span>
       </div>
 
+      {/* NEW: Source Type Filter — the headline feature */}
+      <div style={{ padding: '10px 16px', background: '#FAFBFF', borderBottom: '2px solid #1565C0' }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: '#1A237E', marginBottom: 8 }}>
+          💧 Filter by Water Source
+        </div>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          {SOURCE_FILTERS.map(sf => (
+            <button
+              key={sf.id}
+              onClick={() => handleSourceChange(sf.id)}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 5,
+                padding: '6px 12px', borderRadius: 16, fontSize: 12, fontWeight: 600,
+                border: sourceFilter === sf.id ? '2px solid #1565C0' : '1px solid #E0E0E0',
+                background: sourceFilter === sf.id ? '#E3F2FD' : 'white',
+                color: sourceFilter === sf.id ? '#1565C0' : '#555',
+              }}
+              type="button"
+            >
+              <span>{sf.icon}</span>{sf.label}
+            </button>
+          ))}
+        </div>
+        {sourceFilter !== 'all' && (
+          <div style={{ fontSize: 11, color: '#1565C0', marginTop: 8, fontStyle: 'italic' }}>
+            Showing scores for <b>{currentSourceLabel}</b> only — same area may score differently
+            for other sources (e.g. municipal supply may be safe while borewells nearby are not).
+          </div>
+        )}
+      </div>
+
       {/* Filter row */}
       <div style={{ padding: '10px 16px', background: 'white', borderBottom: '1px solid #E0E0E0' }}>
         <div style={{ display: 'flex', gap: 6, marginBottom: 8, alignItems: 'center' }}>
           <span style={{ fontSize: 12, color: '#555' }}>Filter:</span>
           {TIME_FILTERS.map(tf => (
             <button key={tf} onClick={() => setTimeFilter(tf)}
-              style={{
-                padding: '4px 10px', borderRadius: 12, fontSize: 12, border: 'none',
-                background: timeFilter === tf ? '#1565C0' : '#F5F5F5',
-                color: timeFilter === tf ? 'white' : '#555', cursor: 'pointer',
-              }}
+              style={{ padding: '4px 10px', borderRadius: 12, fontSize: 12, border: 'none',
+                background: timeFilter === tf ? '#1565C0' : '#F5F5F5', color: timeFilter === tf ? 'white' : '#555' }}
               type="button">{tf}</button>
           ))}
         </div>
@@ -150,11 +198,8 @@ const MapPage: React.FC<MapPageProps> = ({ onReportFromMap }) => {
           <span style={{ fontSize: 12, color: '#555' }}>Contaminants:</span>
           {CONTAMINANT_FILTERS.map(cf => (
             <button key={cf} onClick={() => setContaminantFilter(cf)}
-              style={{
-                padding: '4px 10px', borderRadius: 12, fontSize: 12, border: 'none',
-                background: contaminantFilter === cf ? '#1565C0' : '#F5F5F5',
-                color: contaminantFilter === cf ? 'white' : '#555', cursor: 'pointer',
-              }}
+              style={{ padding: '4px 10px', borderRadius: 12, fontSize: 12, border: 'none',
+                background: contaminantFilter === cf ? '#1565C0' : '#F5F5F5', color: contaminantFilter === cf ? 'white' : '#555' }}
               type="button">{cf}</button>
           ))}
         </div>
@@ -164,7 +209,7 @@ const MapPage: React.FC<MapPageProps> = ({ onReportFromMap }) => {
       {loading ? (
         <div style={{ height: 420, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 12 }}>
           <div className="spinner-lg" />
-          <div className="text-muted">Loading community map...</div>
+          <div className="text-muted">Loading {currentSourceLabel.toLowerCase()} data...</div>
         </div>
       ) : (
         <LeafletMap
@@ -179,9 +224,7 @@ const MapPage: React.FC<MapPageProps> = ({ onReportFromMap }) => {
       {/* Authority Alerts */}
       {authorityAlerts.length > 0 && (
         <div style={{ background: '#FFF3E0', padding: '10px 16px', borderBottom: '1px solid #FFE082' }}>
-          <div style={{ fontSize: 13, fontWeight: 700, color: '#E65100', marginBottom: 6 }}>
-            🏛️ GHMC Authority Action Alerts
-          </div>
+          <div style={{ fontSize: 13, fontWeight: 700, color: '#E65100', marginBottom: 6 }}>🏛️ GHMC Authority Action Alerts</div>
           {authorityAlerts.map((alert, i) => (
             <div key={i} style={{ fontSize: 12, color: '#555', marginBottom: 3 }}>
               Alert {i + 1}: {alert.area} ({alert.action})
@@ -196,7 +239,13 @@ const MapPage: React.FC<MapPageProps> = ({ onReportFromMap }) => {
           <div style={{ display: 'flex', justifyContent: 'space-between' }}>
             <div>
               <div style={{ fontSize: 15, fontWeight: 700, color: '#1A237E' }}>{selectedArea.area_name}</div>
-              <div style={{ fontSize: 13, color: '#555' }}>
+              {selectedArea.source_type !== 'all' && (
+                <div style={{ fontSize: 11, color: '#1565C0', fontWeight: 600, marginTop: 2 }}>
+                  {SOURCE_FILTERS.find(s => s.id === selectedArea.source_type)?.icon}{' '}
+                  {SOURCE_FILTERS.find(s => s.id === selectedArea.source_type)?.label || selectedArea.source_type}
+                </div>
+              )}
+              <div style={{ fontSize: 13, color: '#555', marginTop: 4 }}>
                 Score: <b style={{ color: getBandColour(selectedArea.colour_band) }}>{selectedArea.avg_score}/100</b>
                 {' · '}{selectedArea.report_count} reports
               </div>
@@ -219,12 +268,14 @@ const MapPage: React.FC<MapPageProps> = ({ onReportFromMap }) => {
       {/* Area list */}
       {!loading && filteredData.length > 0 && (
         <div style={{ padding: '0 12px' }}>
-          <div className="text-muted" style={{ padding: '8px 4px', fontWeight: 600 }}>Recent Activity</div>
+          <div className="text-muted" style={{ padding: '8px 4px', fontWeight: 600 }}>
+            Recent Activity {sourceFilter !== 'all' && `— ${currentSourceLabel}`}
+          </div>
           {[...filteredData]
             .sort((a, b) => (a.avg_score || 100) - (b.avg_score || 100))
             .slice(0, 12)
             .map((point, i) => {
-              const { icon, color } = getContaminantDisplay(point.primary_contaminant || '');
+              const { icon, color } = getContaminantDisplay(point.primary_contaminant || '', point.colour_band);
               const bandColour = getBandColour(point.colour_band);
               return (
                 <button
@@ -238,27 +289,21 @@ const MapPage: React.FC<MapPageProps> = ({ onReportFromMap }) => {
                   }}
                   type="button"
                 >
-                  {/* Larger contaminant icon */}
                   <div style={{
                     width: 44, height: 44, borderRadius: 12,
-                    background: color + '18',
-                    border: `1.5px solid ${color}44`,
+                    background: color + '18', border: `1.5px solid ${color}44`,
                     display: 'flex', alignItems: 'center', justifyContent: 'center',
                     fontSize: 22, flexShrink: 0,
                   }}>
                     {icon}
                   </div>
-
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 14, fontWeight: 600, color: '#1A237E' }}>
-                      {point.area_name}
-                    </div>
+                    <div style={{ fontSize: 14, fontWeight: 600, color: '#1A237E' }}>{point.area_name}</div>
                     <div style={{ fontSize: 11, color: '#777', marginTop: 2 }}>
                       {point.primary_contaminant || 'No issue'} · {point.report_count} report{point.report_count !== 1 ? 's' : ''}
                       {point.report_count >= 3 ? ' · Health reports rising' : ''}
                     </div>
                   </div>
-
                   <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4, flexShrink: 0 }}>
                     <ScoreBar score={Math.round(point.avg_score)} colour={bandColour} />
                     <div style={{ fontSize: 16, fontWeight: 700, color: bandColour }}>

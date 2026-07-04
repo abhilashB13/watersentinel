@@ -1,240 +1,152 @@
 /**
- * Module: src/components/AgentProgress.tsx
- * Purpose: Shows live agent pipeline progress while report is being analysed.
- *   - Each agent step appears sequentially with a tick when complete
- *   - Elapsed time counter shows total time taken
- *   - Progress bar fills as agents complete
- *   - Calming message shown while user waits
+ * AgentProgress — v5
+ * Uses setInterval instead of chained setTimeout.
+ * Interval-based approach survives React StrictMode double-mount
+ * because cleanup properly clears the interval.
+ * Steps advance every 9 seconds via a single persistent interval.
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 
-interface AgentStep {
-  name: string;
-  description: string;
-  icon: string;
-  durationMs: number; // simulated minimum time for this step
-}
-
-const AGENT_STEPS: AgentStep[] = [
-  {
-    name: 'SourceSense',
-    description: 'Classifying water source and symptoms...',
-    icon: '🔍',
-    durationMs: 8000,
-  },
-  {
-    name: 'WaterProfiler',
-    description: 'Retrieving BIS IS 10500 knowledge base via RAG...',
-    icon: '📚',
-    durationMs: 12000,
-  },
-  {
-    name: 'WaterProfiler',
-    description: 'Diagnosing contaminants and calculating WQS score...',
-    icon: '🧪',
-    durationMs: 10000,
-  },
-  {
-    name: 'CommunityMapper',
-    description: 'Checking cluster data for your pincode...',
-    icon: '🏘️',
-    durationMs: 8000,
-  },
-  {
-    name: 'ActionForge',
-    description: 'Generating personalised advisory and complaint...',
-    icon: '📋',
-    durationMs: 10000,
-  },
+const STEPS = [
+  { name: 'SourceSense',     sub: 'Classifying water source and symptoms...',            done: 'Source classified · Symptoms mapped',        icon: '🔍' },
+  { name: 'WaterProfiler',   sub: 'Retrieving BIS IS 10500 knowledge base via RAG...',  done: 'BIS IS 10500 standards retrieved',            icon: '📚' },
+  { name: 'WaterProfiler',   sub: 'Diagnosing contaminants · Calculating WQS score...', done: 'Contaminants diagnosed · Score calculated',   icon: '🧪' },
+  { name: 'CommunityMapper', sub: 'Checking cluster data for your pincode...',           done: 'Community cluster check complete',            icon: '🏘️' },
+  { name: 'ActionForge',     sub: 'Generating advisory and complaint draft...',          done: 'Advisory ready · Complaint drafted',          icon: '📋' },
 ];
+
+const STEP_DURATION = 9000;
 
 interface AgentProgressProps {
   isActive: boolean;
-  onComplete?: () => void;
+  onViewResults: () => void;
 }
 
-const AgentProgress: React.FC<AgentProgressProps> = ({ isActive, onComplete }) => {
-  const [currentStep, setCurrentStep] = useState(0);
-  const [completedSteps, setCompletedSteps] = useState<number[]>([]);
-  const [elapsedSeconds, setElapsedSeconds] = useState(0);
-  const [done, setDone] = useState(false);
+const AgentProgress: React.FC<AgentProgressProps> = ({ isActive, onViewResults }) => {
+  const [doneCount, setDoneCount] = useState(0); // how many steps are done (0-5)
+  const [elapsed, setElapsed] = useState(0);
+  const doneCountRef = useRef(0);
 
-  // Elapsed time counter
+  // Elapsed clock — separate interval, always runs
   useEffect(() => {
-    if (!isActive) return;
-    const timer = setInterval(() => {
-      setElapsedSeconds(s => s + 1);
-    }, 1000);
-    return () => clearInterval(timer);
-  }, [isActive]);
+    const t = setInterval(() => setElapsed(s => s + 1), 1000);
+    return () => clearInterval(t);
+  }, []);
 
-  // Sequential step progression
+  // Step advancement — single interval, clears itself when all done
   useEffect(() => {
-    if (!isActive) return;
+    doneCountRef.current = 0;
+    setDoneCount(0);
 
-    let stepIndex = 0;
-    const runStep = () => {
-      if (stepIndex >= AGENT_STEPS.length) {
-        setDone(true);
-        return;
+    const t = setInterval(() => {
+      doneCountRef.current += 1;
+      setDoneCount(doneCountRef.current);
+      if (doneCountRef.current >= STEPS.length) {
+        clearInterval(t);
       }
-      setCurrentStep(stepIndex);
-      const duration = AGENT_STEPS[stepIndex].durationMs;
-      setTimeout(() => {
-        setCompletedSteps(prev => [...prev, stepIndex]);
-        stepIndex++;
-        // Small delay between steps — reduces RPM burst
-        setTimeout(runStep, 1500);
-      }, duration);
-    };
+    }, STEP_DURATION);
 
-    runStep();
-  }, [isActive]);
+    return () => clearInterval(t);
+  }, []);
 
   if (!isActive) return null;
 
-  const progressPercent = Math.round(
-    (completedSteps.length / AGENT_STEPS.length) * 100
-  );
-
-  const formatTime = (seconds: number) => {
-    const m = Math.floor(seconds / 60);
-    const s = seconds % 60;
-    return m > 0 ? `${m}m ${s}s` : `${s}s`;
-  };
+  const finished = doneCount >= STEPS.length;
+  const activeStep = Math.min(doneCount, STEPS.length - 1);
+  const pct = Math.round((doneCount / STEPS.length) * 100);
+  const fmt = (s: number) => s >= 60 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${s}s`;
 
   return (
-    <div style={{
-      background: '#FFFFFF',
-      borderRadius: 16,
-      padding: 20,
-      margin: '12px 0',
-      border: '1px solid #E0E0E0',
-      boxShadow: '0 2px 8px rgba(0,0,0,0.08)',
-    }}>
+    <div style={{ background: '#fff', borderRadius: 16, padding: 20, marginBottom: 12, border: '1px solid #E0E0E0', boxShadow: '0 2px 8px rgba(0,0,0,0.08)' }}>
+
       {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
         <div style={{ fontSize: 14, fontWeight: 700, color: '#1A237E' }}>
-          🤖 AI Agents Working...
+          {finished ? '✅ Analysis Complete' : '🤖 AI Agents Working...'}
         </div>
-        <div style={{
-          fontSize: 13, fontWeight: 600,
-          color: '#1565C0',
-          background: '#E3F2FD',
-          padding: '3px 10px',
-          borderRadius: 12,
-        }}>
-          ⏱ {formatTime(elapsedSeconds)}
+        <div style={{ fontSize: 13, fontWeight: 600, color: '#1565C0', background: '#E3F2FD', padding: '3px 10px', borderRadius: 12 }}>
+          ⏱ {fmt(elapsed)}
         </div>
       </div>
 
-      {/* Progress Bar */}
-      <div style={{
-        height: 6, background: '#E0E0E0',
-        borderRadius: 3, marginBottom: 16, overflow: 'hidden',
-      }}>
+      {/* Progress bar */}
+      <div style={{ height: 6, background: '#E0E0E0', borderRadius: 3, marginBottom: 16, overflow: 'hidden' }}>
         <div style={{
-          height: '100%',
-          width: `${progressPercent}%`,
-          background: 'linear-gradient(90deg, #1565C0, #42A5F5)',
-          borderRadius: 3,
-          transition: 'width 0.8s ease',
+          height: '100%', width: `${pct}%`, borderRadius: 3, transition: 'width 0.6s ease',
+          background: finished
+            ? 'linear-gradient(90deg,#2E7D32,#66BB6A)'
+            : 'linear-gradient(90deg,#1565C0,#42A5F5)',
         }} />
       </div>
 
-      {/* Agent Steps */}
+      {/* Steps */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-        {AGENT_STEPS.map((step, i) => {
-          const isCompleted = completedSteps.includes(i);
-          const isCurrent = currentStep === i && !isCompleted;
-          const isPending = i > currentStep;
+        {STEPS.map((step, i) => {
+          const done = i < doneCount;
+          const active = i === doneCount && !finished;
+          const pending = i > doneCount;
 
           return (
-            <div key={i} style={{
-              display: 'flex', alignItems: 'center', gap: 12,
-              opacity: isPending ? 0.4 : 1,
-              transition: 'opacity 0.4s',
-            }}>
-              {/* Status indicator */}
+            <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 12, opacity: pending ? 0.35 : 1, transition: 'opacity 0.4s' }}>
               <div style={{
-                width: 28, height: 28, borderRadius: 14, flexShrink: 0,
+                width: 32, height: 32, borderRadius: 16, flexShrink: 0,
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
-                background: isCompleted ? '#E8F5E9' : isCurrent ? '#E3F2FD' : '#F5F5F5',
-                border: `2px solid ${isCompleted ? '#2E7D32' : isCurrent ? '#1565C0' : '#E0E0E0'}`,
-                fontSize: 13,
-                transition: 'all 0.3s',
+                background: done ? '#E8F5E9' : active ? '#E3F2FD' : '#F5F5F5',
+                border: `2px solid ${done ? '#2E7D32' : active ? '#1565C0' : '#E0E0E0'}`,
+                fontSize: 15, transition: 'all 0.3s',
               }}>
-                {isCompleted ? '✓' : isCurrent ? (
-                  <span style={{
-                    display: 'inline-block',
-                    width: 10, height: 10,
-                    borderRadius: 5,
-                    background: '#1565C0',
-                    animation: 'pulse 1s infinite',
-                  }} />
-                ) : step.icon}
+                {done
+                  ? <span style={{ color: '#2E7D32', fontWeight: 700, fontSize: 16 }}>✓</span>
+                  : active
+                    ? <span style={{ display: 'inline-block', width: 10, height: 10, borderRadius: 5, background: '#1565C0', animation: 'wsPulse 1s infinite' }} />
+                    : step.icon}
               </div>
-
-              {/* Step info */}
               <div style={{ flex: 1 }}>
-                <div style={{
-                  fontSize: 12, fontWeight: 700,
-                  color: isCompleted ? '#2E7D32' : isCurrent ? '#1565C0' : '#9E9E9E',
-                }}>
-                  {step.name}
-                  {isCompleted && (
-                    <span style={{ fontSize: 11, fontWeight: 400, marginLeft: 6, color: '#2E7D32' }}>
-                      — Done
-                    </span>
-                  )}
+                <div style={{ fontSize: 13, fontWeight: 700, color: done ? '#2E7D32' : active ? '#1565C0' : '#9E9E9E' }}>
+                  {step.name}{done && <span style={{ fontSize: 11, fontWeight: 400, marginLeft: 6 }}>— Done</span>}
                 </div>
                 <div style={{ fontSize: 11, color: '#757575', marginTop: 1 }}>
-                  {isCompleted
-                    ? step.description.replace('...', '')
-                    : isCurrent
-                      ? step.description
-                      : 'Waiting...'}
+                  {done ? step.done : active ? step.sub : 'Waiting...'}
                 </div>
               </div>
-
-              {/* Spinner for active step */}
-              {isCurrent && (
-                <div className="spinner" style={{
-                  borderTopColor: '#1565C0',
-                  borderColor: '#E0E0E0',
-                  borderTopColor: '#1565C0',
-                  width: 16, height: 16,
-                  border: '2px solid #E0E0E0',
-                  borderTop: '2px solid #1565C0',
-                  borderRadius: 8,
-                  animation: 'spin 0.7s linear infinite',
-                }} />
+              {active && (
+                <div style={{ width: 16, height: 16, borderRadius: 8, border: '2px solid #E0E0E0', borderTop: '2px solid #1565C0', animation: 'wsSpin 0.7s linear infinite', flexShrink: 0 }} />
               )}
             </div>
           );
         })}
       </div>
 
-      {/* Reassuring message */}
-      <div style={{
-        marginTop: 16, padding: '10px 14px',
-        background: '#F8F9FA', borderRadius: 8,
-        fontSize: 12, color: '#555', lineHeight: 1.5,
-      }}>
-        {elapsedSeconds < 20
-          ? '💡 Agents are reading BIS IS 10500 Indian water standards before diagnosing...'
-          : elapsedSeconds < 40
-            ? '🏘️ Checking if your neighbours reported similar issues this week...'
-            : '📋 Almost done — preparing your personalised advisory and complaint if needed...'}
+      {/* Message */}
+      <div style={{ marginTop: 14, padding: '10px 14px', borderRadius: 8, fontSize: 12, lineHeight: 1.5, background: finished ? '#E8F5E9' : '#F8F9FA', color: finished ? '#2E7D32' : '#555' }}>
+        {finished
+          ? '✅ All 5 agents completed. Your water quality report is ready.'
+          : elapsed < 15 ? '💡 Agents are reading BIS IS 10500 Indian water standards...'
+          : elapsed < 30 ? '🏘️ Checking if your neighbours reported similar issues...'
+          : '📋 Almost done — preparing your advisory and complaint...'}
       </div>
 
-      {/* Pulse animation style */}
+      {/* View Results button */}
+      {finished && (
+        <button
+          onClick={onViewResults}
+          style={{ marginTop: 12, width: '100%', padding: 14, background: '#2E7D32', color: 'white', border: 'none', borderRadius: 10, fontSize: 15, fontWeight: 700, cursor: 'pointer' }}
+          type="button"
+        >
+          🎯 View My Results →
+        </button>
+      )}
+
+      {!finished && (
+        <div style={{ textAlign: 'center', fontSize: 12, color: '#9E9E9E', marginTop: 8 }}>
+          Please keep this tab open. Analysis takes 45–60 seconds.
+        </div>
+      )}
+
       <style>{`
-        @keyframes pulse {
-          0%, 100% { opacity: 1; transform: scale(1); }
-          50% { opacity: 0.5; transform: scale(0.8); }
-        }
+        @keyframes wsPulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:0.4;transform:scale(0.75)}}
+        @keyframes wsSpin{to{transform:rotate(360deg)}}
       `}</style>
     </div>
   );

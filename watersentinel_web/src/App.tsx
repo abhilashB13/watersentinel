@@ -90,7 +90,7 @@ const App: React.FC = () => {
             </div>
           </div>
         </div>
-        {(activeTab === 'report' || activeTab === 'about') && (
+        {(activeTab === 'report' || activeTab === 'about' || activeTab === 'home' || activeTab === 'map') && (
           <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
             <button onClick={() => setLang('en')}
               style={{ color: lang === 'en' ? 'white' : '#90CAF9', fontWeight: lang === 'en' ? 700 : 400, fontSize: 13 }}

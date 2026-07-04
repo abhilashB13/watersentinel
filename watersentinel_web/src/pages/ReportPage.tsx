@@ -1,8 +1,10 @@
 /**
  * Module: src/pages/ReportPage.tsx
- * Changes from previous version:
- *   - AgentProgress component shown during loading instead of spinner
- *   - No other logic changes
+ * FIXED: Removed finally{ setLoading(false) } which was killing
+ * AgentProgress animation the instant the API responded (~20s),
+ * regardless of which step the visual animation was on.
+ * Now loading only resets on actual error — stays true through
+ * success so AgentProgress completes its full 45s animation.
  */
 
 import React, { useState, useRef, useEffect } from 'react';
@@ -52,6 +54,7 @@ const ReportPage: React.FC<ReportPageProps> = ({
 }) => {
   const [step, setStep] = useState<Step>('intent');
   const [intent, setIntent] = useState('');
+
   // Questionnaire
   const [diagnosedDisease, setDiagnosedDisease] = useState(false);
   const [frequentSickness, setFrequentSickness] = useState(false);
@@ -77,14 +80,16 @@ const ReportPage: React.FC<ReportPageProps> = ({
   const [error, setError] = useState('');
   const [listening, setListening] = useState(false);
 
+  // Refs — do NOT trigger re-renders, safe to update during animation
+  const pendingResultRef = useRef<WaterReportResponse | null>(null);
+  const pendingPincodeRef = useRef<string>('');
+
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (prefillPincode) setPincode(prefillPincode);
     if (prefillArea) setAreaName(prefillArea);
   }, [prefillPincode, prefillArea]);
-
-
 
   const startVoice = () => {
     const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
@@ -127,6 +132,12 @@ const ReportPage: React.FC<ReportPageProps> = ({
     return parts.join('. ');
   };
 
+  // ═══════════════════════════════════════════════════════════════
+  // THE ACTUAL FIX IS HERE — no more `finally` block.
+  // loading only resets to false in the catch block (real errors).
+  // On success it STAYS TRUE — AgentProgress runs its full animation
+  // regardless of how fast/slow the backend actually responded.
+  // ═══════════════════════════════════════════════════════════════
   const handleSubmit = async () => {
     setError('');
     if (!sourceType) { setError('Please select your water source type.'); return; }
@@ -136,16 +147,20 @@ const ReportPage: React.FC<ReportPageProps> = ({
     if (selectedSymptoms.length === 0 && description.trim().length < 5) {
       setError('Please select at least one symptom or describe the issue.'); return;
     }
+
     const questionnaireContext = buildQuestionnaireContext();
     const symptomLabels = selectedSymptoms.map(id => SYMPTOM_OPTIONS.find(s => s.id === id)?.label || id);
     const sourceLabel = SOURCE_TYPES.find(s => s.id === sourceType)?.label || sourceType;
     const intentLabel = INTENTS.find(i => i.id === intent)?.title || 'General Water Analysis';
+
     let userMessage = `Analysis intent: ${intentLabel}. Water source: ${sourceLabel}. `;
     if (symptomLabels.length > 0) userMessage += `Symptoms: ${symptomLabels.join(', ')}. `;
     if (questionnaireContext) userMessage += `Pre-analysis: ${questionnaireContext}. `;
     if (description.trim()) userMessage += description.trim();
     if (areaName) userMessage += ` Location: ${areaName}.`;
+
     setLoading(true);
+
     try {
       const result = await submitWaterReport({
         user_message: userMessage,
@@ -155,12 +170,17 @@ const ReportPage: React.FC<ReportPageProps> = ({
         symptoms: selectedSymptoms,
         photo_base64: photoBase64 || undefined,
       });
-      onReportComplete(result, pincode);
+      // Store in ref only — no re-render, animation continues undisturbed
+      pendingResultRef.current = result;
+      pendingPincodeRef.current = pincode;
+      // NOTE: We deliberately do NOT call setLoading(false) here.
+      // AgentProgress keeps animating until user clicks "View My Results".
     } catch (err: any) {
+      // Only reset loading on genuine failure
       setError(err.message || 'Could not reach WaterSentinel server.');
-    } finally {
       setLoading(false);
     }
+    // NO finally BLOCK — this was the bug. Do not add one back.
   };
 
   const LangToggle = () => onLangChange ? (
@@ -399,21 +419,21 @@ const ReportPage: React.FC<ReportPageProps> = ({
           </div>
         )}
 
-        {/* Button hidden while loading */}
         {!loading && (
           <button className="btn-primary" onClick={handleSubmit} type="button">
             ✨ Continue to Deep AI Agent Analysis
           </button>
         )}
 
-        {/* AgentProgress shown while loading */}
         {loading && (
-          <>
-            <AgentProgress isActive={loading} />
-            <div style={{ textAlign: 'center', fontSize: 12, color: '#9E9E9E', marginTop: 8 }}>
-              Please keep this tab open. Analysis takes 45–60 seconds.
-            </div>
-          </>
+          <AgentProgress
+            isActive={loading}
+            onViewResults={() => {
+              const result = pendingResultRef.current;
+              const pin = pendingPincodeRef.current;
+              if (result) onReportComplete(result, pin);
+            }}
+          />
         )}
       </div>
     </div>

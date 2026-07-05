@@ -1,22 +1,21 @@
 /**
  * Module: src/pages/ReportPage.tsx
- * FIXED: Removed finally{ setLoading(false) } which was killing
- * AgentProgress animation the instant the API responded (~20s),
- * regardless of which step the visual animation was on.
- * Now loading only resets on actual error — stays true through
- * success so AgentProgress completes its full 45s animation.
+ * Changes from previous version:
+ *   - AgentProgress component shown during loading instead of spinner
+ *   - No other logic changes
  */
 
 import React, { useState, useRef, useEffect } from 'react';
 import { submitWaterReport, WaterReportResponse } from '../api/watersentinel';
 import AgentProgress from '../components/AgentProgress';
+import { t, Lang } from '../i18n/translations';
 
 interface ReportPageProps {
   onReportComplete: (result: WaterReportResponse, pincode: string) => void;
   prefillPincode?: string;
   prefillArea?: string;
-  lang?: 'en' | 'hi';
-  onLangChange?: (lang: 'en' | 'hi') => void;
+  lang?: Lang;
+  onLangChange?: (lang: Lang) => void;
 }
 
 type Step = 'intent' | 'questionnaire' | 'evidence';
@@ -54,10 +53,12 @@ const ReportPage: React.FC<ReportPageProps> = ({
 }) => {
   const [step, setStep] = useState<Step>('intent');
   const [intent, setIntent] = useState('');
-
   // Questionnaire
   const [diagnosedDisease, setDiagnosedDisease] = useState(false);
   const [frequentSickness, setFrequentSickness] = useState(false);
+  // NEW — conditional follow-ups, only meaningful when frequentSickness is true
+  const [affectedCount, setAffectedCount] = useState<'1' | '2-3' | '4+' | ''>('');
+  const [sinceWhen, setSinceWhen] = useState<'days' | 'weeks' | 'months' | ''>('');
   const [stomachPains, setStomachPains] = useState(false);
   const [swallowingIssue, setSwallowingIssue] = useState(false);
   const [algaeInFilters, setAlgaeInFilters] = useState(false);
@@ -74,13 +75,14 @@ const ReportPage: React.FC<ReportPageProps> = ({
   const [description, setDescription] = useState('');
   const [pincode, setPincode] = useState(prefillPincode);
   const [areaName, setAreaName] = useState(prefillArea);
+  const [colonyName, setColonyName] = useState('');
   const [photoBase64, setPhotoBase64] = useState('');
   const [photoPreview, setPhotoPreview] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [listening, setListening] = useState(false);
-
-  // Refs — do NOT trigger re-renders, safe to update during animation
+  const [pendingResult, setPendingResult] = useState<WaterReportResponse | null>(null);
+  const [pendingPincode, setPendingPincode] = useState('');
   const pendingResultRef = useRef<WaterReportResponse | null>(null);
   const pendingPincodeRef = useRef<string>('');
 
@@ -90,6 +92,8 @@ const ReportPage: React.FC<ReportPageProps> = ({
     if (prefillPincode) setPincode(prefillPincode);
     if (prefillArea) setAreaName(prefillArea);
   }, [prefillPincode, prefillArea]);
+
+
 
   const startVoice = () => {
     const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
@@ -132,12 +136,6 @@ const ReportPage: React.FC<ReportPageProps> = ({
     return parts.join('. ');
   };
 
-  // ═══════════════════════════════════════════════════════════════
-  // THE ACTUAL FIX IS HERE — no more `finally` block.
-  // loading only resets to false in the catch block (real errors).
-  // On success it STAYS TRUE — AgentProgress runs its full animation
-  // regardless of how fast/slow the backend actually responded.
-  // ═══════════════════════════════════════════════════════════════
   const handleSubmit = async () => {
     setError('');
     if (!sourceType) { setError('Please select your water source type.'); return; }
@@ -147,40 +145,48 @@ const ReportPage: React.FC<ReportPageProps> = ({
     if (selectedSymptoms.length === 0 && description.trim().length < 5) {
       setError('Please select at least one symptom or describe the issue.'); return;
     }
-
     const questionnaireContext = buildQuestionnaireContext();
     const symptomLabels = selectedSymptoms.map(id => SYMPTOM_OPTIONS.find(s => s.id === id)?.label || id);
     const sourceLabel = SOURCE_TYPES.find(s => s.id === sourceType)?.label || sourceType;
     const intentLabel = INTENTS.find(i => i.id === intent)?.title || 'General Water Analysis';
-
     let userMessage = `Analysis intent: ${intentLabel}. Water source: ${sourceLabel}. `;
     if (symptomLabels.length > 0) userMessage += `Symptoms: ${symptomLabels.join(', ')}. `;
     if (questionnaireContext) userMessage += `Pre-analysis: ${questionnaireContext}. `;
     if (description.trim()) userMessage += description.trim();
     if (areaName) userMessage += ` Location: ${areaName}.`;
-
     setLoading(true);
-
     try {
       const result = await submitWaterReport({
         user_message: userMessage,
         pincode,
         area_name: areaName.trim(),
+        colony_name: colonyName.trim(),
         source_type: sourceType,
         symptoms: selectedSymptoms,
         photo_base64: photoBase64 || undefined,
+        tds_value: tdsValue ? parseInt(tdsValue, 10) : undefined,
+        // FIXED: send actual checkbox state directly — this is the fix for
+        // the bug where the word "diagnosed" appearing in free text (even
+        // just describing an unchecked option) was mistaken for a confirmed
+        // Yes answer, fabricating a faecal/coliform score-0 result the
+        // citizen never actually selected.
+        diagnosed_disease: diagnosedDisease,
+        frequent_sickness: frequentSickness || stomachPains,
+        affected_count: affectedCount || undefined,
+        since_when: sinceWhen || undefined,
+        algae_in_filters: algaeInFilters,
+        tank_sludge: tankBottomDeposits || tankWallSmudge,
       });
-      // Store in ref only — no re-render, animation continues undisturbed
+      // Store in ref — does NOT trigger re-render, animation continues uninterrupted
       pendingResultRef.current = result;
       pendingPincodeRef.current = pincode;
-      // NOTE: We deliberately do NOT call setLoading(false) here.
-      // AgentProgress keeps animating until user clicks "View My Results".
+      // NOTE: loading stays TRUE here on purpose.
+      // AgentProgress keeps running until user clicks "View My Results".
+      // loading is only set false on error (below) or when user proceeds.
     } catch (err: any) {
-      // Only reset loading on genuine failure
       setError(err.message || 'Could not reach WaterSentinel server.');
-      setLoading(false);
+      setLoading(false); // Only reset loading on actual failure
     }
-    // NO finally BLOCK — this was the bug. Do not add one back.
   };
 
   const LangToggle = () => onLangChange ? (
@@ -188,6 +194,8 @@ const ReportPage: React.FC<ReportPageProps> = ({
       <button onClick={() => onLangChange('en')} style={{ color: lang === 'en' ? 'white' : '#90CAF9', fontWeight: lang === 'en' ? 700 : 400, fontSize: 13 }} type="button">EN</button>
       <span style={{ color: '#90CAF9' }}>|</span>
       <button onClick={() => onLangChange('hi')} style={{ color: lang === 'hi' ? 'white' : '#90CAF9', fontWeight: lang === 'hi' ? 700 : 400, fontSize: 13 }} type="button">HI</button>
+      <span style={{ color: '#90CAF9' }}>|</span>
+      <button onClick={() => onLangChange('te')} style={{ color: lang === 'te' ? 'white' : '#90CAF9', fontWeight: lang === 'te' ? 700 : 400, fontSize: 13 }} type="button">TE</button>
     </div>
   ) : null;
 
@@ -200,13 +208,19 @@ const ReportPage: React.FC<ReportPageProps> = ({
   );
 
   // ═══════════ STEP 1 — INTENT ═══════════
-  if (step === 'intent') return (
+  if (step === 'intent') {
+    const localizedIntents = [
+      { id: 'health', icon: '🏥', title: t(lang, 'intentHealthTitle'), desc: t(lang, 'intentHealthDesc') },
+      { id: 'ro', icon: '💧', title: t(lang, 'intentROTitle'), desc: t(lang, 'intentRODesc') },
+      { id: 'general', icon: '🏠', title: t(lang, 'intentGeneralTitle'), desc: t(lang, 'intentDailyDesc') },
+    ];
+    return (
     <div>
       <div className="card" style={{ marginTop: 12 }}>
         <div style={{ fontSize: 17, fontWeight: 700, color: '#1A237E', marginBottom: 14 }}>
-          Why do you want to analyse your water?
+          {t(lang, 'whyAnalyse')}
         </div>
-        {INTENTS.map(item => (
+        {localizedIntents.map(item => (
           <button key={item.id}
             onClick={() => { setIntent(item.id); setStep('questionnaire'); }}
             style={{ display: 'flex', alignItems: 'center', gap: 14, width: '100%', padding: 14, marginBottom: 10, border: '2px solid #E0E0E0', borderRadius: 12, background: '#FAFAFA', textAlign: 'left' }}
@@ -223,47 +237,46 @@ const ReportPage: React.FC<ReportPageProps> = ({
       </div>
 
       <div className="card">
-        <div style={{ fontSize: 13, color: '#666', marginBottom: 8 }}>Or describe your concern directly:</div>
+        <div style={{ fontSize: 13, color: '#666', marginBottom: 8 }}>{t(lang, 'orDescribe')}</div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <button onClick={startVoice}
             style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 14px', border: '2px solid #1565C0', borderRadius: 20, color: '#1565C0', fontSize: 13, fontWeight: 600, background: listening ? '#E3F2FD' : 'white' }}
             type="button">
-            🎤 {listening ? 'Listening...' : 'Describe by Voice'}
+            🎤 {listening ? t(lang, 'listening') : t(lang, 'describeByVoice')}
           </button>
-          <input className="text-input" style={{ flex: 1 }} placeholder="or type briefly..."
+          <input className="text-input" style={{ flex: 1 }} placeholder={t(lang, 'typeBriefly')}
             value={description} onChange={e => setDescription(e.target.value)} />
         </div>
         {description && (
           <button className="btn-primary" style={{ marginTop: 10 }}
             onClick={() => { setIntent('general'); setStep('questionnaire'); }} type="button">
-            Continue →
+            {t(lang, 'continueArrow')}
           </button>
         )}
       </div>
 
       <div className="card" style={{ background: '#E8F4FD', borderLeft: '4px solid #1565C0' }}>
         <div style={{ fontSize: 13, lineHeight: 1.7, color: '#1A237E' }}>
-          <b>Our Mission:</b> WaterSentinel is building India's first citizen-powered water quality
-          intelligence network. Every report you file becomes a data point that protects your
-          neighbourhood. When enough citizens report, we automatically alert the municipality —
-          so you don't have to.
+          <b>{t(lang, 'ourMission')}</b> {lang === 'hi' ? t(lang, 'visionText') :
+          "WaterSentinel is building India's first citizen-powered water quality intelligence network. Every report you file becomes a data point that protects your neighbourhood. When enough citizens report, we automatically alert the municipality — so you don't have to."}
         </div>
       </div>
 
       <div style={{ textAlign: 'center', padding: 12 }} className="text-muted">
-        * Our AI Agent supports Voice and Photo evidence
+        {t(lang, 'aiNote').replace('Voice, Text, and Photo', 'Voice and Photo')}
       </div>
     </div>
   );
+  }
 
   // ═══════════ STEP 2 — QUESTIONNAIRE ═══════════
   if (step === 'questionnaire') return (
     <div>
       <div style={{ background: '#1565C0', padding: '12px 16px', color: 'white', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
         <div>
-          <button onClick={() => setStep('intent')} style={{ color: '#90CAF9', fontSize: 12, marginBottom: 4 }} type="button">← Back</button>
-          <div style={{ fontSize: 17, fontWeight: 700 }}>Diagnostic Deep-Dive</div>
-          <div style={{ fontSize: 12, color: '#90CAF9' }}>Pre-analysis check questions</div>
+          <button onClick={() => setStep('intent')} style={{ color: '#90CAF9', fontSize: 12, marginBottom: 4 }} type="button">{t(lang, 'back')}</button>
+          <div style={{ fontSize: 17, fontWeight: 700 }}>{t(lang, 'diagnosticDeepDive')}</div>
+          <div style={{ fontSize: 12, color: '#90CAF9' }}>{t(lang, 'preAnalysisQuestions')}</div>
         </div>
         <LangToggle />
       </div>
@@ -272,18 +285,78 @@ const ReportPage: React.FC<ReportPageProps> = ({
       </div>
 
       <div className="card">
-        <div className="card-title">🏥 Health Questions</div>
-        <CheckItem label="Someone constantly sick at home?" checked={frequentSickness} onChange={setFrequentSickness} />
-        <CheckItem label="Doctor diagnosed Cholera, Typhoid, Dysentery?" checked={diagnosedDisease} onChange={setDiagnosedDisease} />
-        <CheckItem label="Frequent stomach pains in family?" checked={stomachPains} onChange={setStomachPains} />
-        <CheckItem label="Water swallowing is a problem?" checked={swallowingIssue} onChange={setSwallowingIssue} />
+        <div className="card-title">{t(lang, 'healthQuestions')}</div>
+        <CheckItem
+          label={t(lang, 'qSickHome')}
+          checked={frequentSickness}
+          onChange={(val) => {
+            setFrequentSickness(val);
+            if (!val) {
+              // Clear stale follow-up answers if the parent question is unticked
+              setAffectedCount('');
+              setSinceWhen('');
+            }
+          }}
+        />
+
+        {/* Conditional follow-ups — only shown when sickness is ticked.
+            This is the smart-form pattern: don't clutter the questionnaire
+            with fields that are meaningless when the parent answer is No. */}
+        {frequentSickness && (
+          <div style={{
+            marginLeft: 26, marginBottom: 14, padding: '10px 12px',
+            background: '#FFF8E1', borderRadius: 8, borderLeft: '3px solid #F9A825',
+          }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: '#8A4A1E', marginBottom: 8 }}>
+              {t(lang, 'qHowManyAffected')}
+            </div>
+            <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+              {(['1', '2-3', '4+'] as const).map(val => (
+                <button key={val} onClick={() => setAffectedCount(val)}
+                  style={{
+                    padding: '5px 14px', borderRadius: 16, fontSize: 12, border: '1px solid',
+                    borderColor: affectedCount === val ? '#E65100' : '#BDBDBD',
+                    background: affectedCount === val ? '#FBE9E7' : 'white',
+                    color: affectedCount === val ? '#E65100' : '#555',
+                    fontWeight: affectedCount === val ? 600 : 400,
+                  }}
+                  type="button">
+                  {val === '1' ? t(lang, 'affectedJustOne') : val === '2-3' ? t(lang, 'affected2to3') : t(lang, 'affected4plus')}
+                </button>
+              ))}
+            </div>
+
+            <div style={{ fontSize: 13, fontWeight: 600, color: '#8A4A1E', marginBottom: 8 }}>
+              {t(lang, 'qSinceWhen')}
+            </div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              {(['days', 'weeks', 'months'] as const).map(val => (
+                <button key={val} onClick={() => setSinceWhen(val)}
+                  style={{
+                    padding: '5px 14px', borderRadius: 16, fontSize: 12, border: '1px solid',
+                    borderColor: sinceWhen === val ? '#E65100' : '#BDBDBD',
+                    background: sinceWhen === val ? '#FBE9E7' : 'white',
+                    color: sinceWhen === val ? '#E65100' : '#555',
+                    fontWeight: sinceWhen === val ? 600 : 400,
+                  }}
+                  type="button">
+                  {val === 'days' ? t(lang, 'sinceFewDays') : val === 'weeks' ? t(lang, 'sinceFewWeeks') : t(lang, 'sinceMonths')}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <CheckItem label={t(lang, 'qDiagnosed')} checked={diagnosedDisease} onChange={setDiagnosedDisease} />
+        <CheckItem label={t(lang, 'qStomachPains')} checked={stomachPains} onChange={setStomachPains} />
+        <CheckItem label={t(lang, 'qSwallowing')} checked={swallowingIssue} onChange={setSwallowingIssue} />
       </div>
 
       <div className="card">
-        <div className="card-title">🔧 Hardware & Use Questions</div>
-        <CheckItem label="Is water having deposits on pipes?" checked={pipeDeposits} onChange={setPipeDeposits} />
+        <div className="card-title">{t(lang, 'hardwareQuestions')}</div>
+        <CheckItem label={t(lang, 'qDeposits')} checked={pipeDeposits} onChange={setPipeDeposits} />
         <div style={{ marginBottom: 10 }}>
-          <div style={{ fontSize: 14, marginBottom: 6 }}>Does water produce lather easily?</div>
+          <div style={{ fontSize: 14, marginBottom: 6 }}>{t(lang, 'qLather')}</div>
           <div style={{ display: 'flex', gap: 10 }}>
             {[true, false].map(val => (
               <button key={String(val)} onClick={() => setPoorLather(val)}
@@ -292,56 +365,87 @@ const ReportPage: React.FC<ReportPageProps> = ({
                   background: poorLather === val ? '#E3F2FD' : '#FAFAFA',
                   color: poorLather === val ? '#1565C0' : '#555',
                   fontWeight: poorLather === val ? 600 : 400 }}
-                type="button">{val ? 'Yes' : 'No'}</button>
+                type="button">{val ? t(lang, 'yes') : t(lang, 'no')}</button>
             ))}
           </div>
           {poorLather === false && (
-            <div style={{ fontSize: 12, color: '#E65100', marginTop: 4 }}>⚠️ Poor lather = hard water indicator</div>
+            <div style={{ fontSize: 12, color: '#E65100', marginTop: 4 }}>{t(lang, 'latherWarning')}</div>
           )}
         </div>
         <label style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10, fontSize: 14 }}>
-          <span>Water flow in pipes:</span>
+          <span>{t(lang, 'waterFlow')}</span>
           <select value={waterFlow} onChange={e => setWaterFlow(e.target.value)}
             style={{ border: '1px solid #E0E0E0', borderRadius: 6, padding: '4px 8px', fontSize: 13 }}>
-            <option value="">Select</option>
-            <option value="strong">Strong</option>
-            <option value="normal">Normal</option>
-            <option value="weak">Weak</option>
+            <option value="">{t(lang, 'selectOption')}</option>
+            <option value="strong">{t(lang, 'flowStrong')}</option>
+            <option value="normal">{t(lang, 'flowNormal')}</option>
+            <option value="weak">{t(lang, 'flowWeak')}</option>
           </select>
         </label>
         <label style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 14 }}>
-          <span style={{ flexShrink: 0 }}>TDS if known (ppm):</span>
+          <span style={{ flexShrink: 0 }}>{t(lang, 'tdsLabel')}</span>
           <input type="number" placeholder="e.g. 450" value={tdsValue} onChange={e => setTdsValue(e.target.value)}
             style={{ border: '1px solid #E0E0E0', borderRadius: 6, padding: '6px 10px', width: 90, fontSize: 13 }} />
         </label>
       </div>
 
       <div className="card">
-        <div className="card-title">🔍 Specific Observations</div>
-        <CheckItem label="Tap filter has algae, rust, or sand?" checked={algaeInFilters} onChange={setAlgaeInFilters} />
-        <CheckItem label="Overhead tank bottom has black/brown deposits?" checked={tankBottomDeposits} onChange={setTankBottomDeposits} />
-        <CheckItem label="Overhead tank inner walls have soil smudge?" checked={tankWallSmudge} onChange={setTankWallSmudge} />
+        <div className="card-title">{t(lang, 'specificObservations')}</div>
+        <CheckItem label={t(lang, 'qAlgae')} checked={algaeInFilters} onChange={setAlgaeInFilters} />
+        <CheckItem label={t(lang, 'qTankBottom')} checked={tankBottomDeposits} onChange={setTankBottomDeposits} />
+        <CheckItem label={t(lang, 'qTankWalls')} checked={tankWallSmudge} onChange={setTankWallSmudge} />
       </div>
 
       <div style={{ padding: '0 16px 16px' }}>
         <div className="text-muted text-center" style={{ marginBottom: 10 }}>
-          * Our AI agent can process Photo and Voice evidence in the next stage
+          {t(lang, 'proceedNote')}
         </div>
         <button className="btn-primary" onClick={() => setStep('evidence')} type="button">
-          Confirm and Proceed to AI Analysis
+          {t(lang, 'confirmProceed')}
         </button>
       </div>
     </div>
   );
 
   // ═══════════ STEP 3 — EVIDENCE ═══════════
+  const localizedSources = [
+    { id: 'borewell', label: t(lang, 'sourceBorewell'), icon: '⛏️' },
+    { id: 'municipal_pipeline', label: t(lang, 'sourceMunicipal'), icon: '🚰' },
+    { id: 'hand_pump', label: t(lang, 'sourceHandPump'), icon: '💧' },
+    { id: 'open_well', label: t(lang, 'sourceOpenWell'), icon: '🪣' },
+  ];
+
+  const localizedSymptoms = [
+    { id: 'egg_smell', label: t(lang, 'symptomEgg') },
+    { id: 'sewage_smell', label: t(lang, 'symptomSewage') },
+    { id: 'yellow_colour', label: t(lang, 'symptomYellow') },
+    { id: 'black_colour', label: t(lang, 'symptomBlack') },
+    { id: 'white_deposits', label: t(lang, 'symptomWhiteDeposits') },
+    { id: 'blue_green_stain', label: t(lang, 'symptomBlueGreen') },
+    { id: 'metallic_taste', label: t(lang, 'symptomMetallic') },
+    { id: 'salty_taste', label: t(lang, 'symptomSalty') },
+    { id: 'milky_appearance', label: t(lang, 'symptomMilky') },
+    { id: 'stomach_issues', label: t(lang, 'symptomStomach') },
+    // NEW — research-backed additions (BIS sensory-check protocol +
+    // documented contamination indicators)
+    { id: 'chlorine_smell', label: t(lang, 'symptomChlorine') },
+    { id: 'colour_after_standing', label: t(lang, 'symptomColourAfterStanding') },
+    { id: 'gritty_texture', label: t(lang, 'symptomGritty') },
+    { id: 'foamy_water', label: t(lang, 'symptomFoamy') },
+    { id: 'oily_sheen', label: t(lang, 'symptomOilySheen') },
+    { id: 'insects_visible', label: t(lang, 'symptomInsects') },
+    { id: 'skin_irritation', label: t(lang, 'symptomSkinIrritation') },
+    { id: 'vessel_staining', label: t(lang, 'symptomVesselStaining') },
+    { id: 'no_visible_symptom', label: t(lang, 'symptomNone') },
+  ];
+
   return (
     <div>
       <div style={{ background: '#1565C0', padding: '12px 16px', color: 'white', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
         <div>
-          <button onClick={() => setStep('questionnaire')} style={{ color: '#90CAF9', fontSize: 12, marginBottom: 4 }} type="button">← Back</button>
-          <div style={{ fontSize: 17, fontWeight: 700 }}>Evidence Input</div>
-          <div style={{ fontSize: 12, color: '#90CAF9' }}>Identify your source and symptoms</div>
+          <button onClick={() => setStep('questionnaire')} style={{ color: '#90CAF9', fontSize: 12, marginBottom: 4 }} type="button">{t(lang, 'back')}</button>
+          <div style={{ fontSize: 17, fontWeight: 700 }}>{t(lang, 'evidenceInput')}</div>
+          <div style={{ fontSize: 12, color: '#90CAF9' }}>{t(lang, 'identifySource')}</div>
         </div>
         <LangToggle />
       </div>
@@ -350,9 +454,9 @@ const ReportPage: React.FC<ReportPageProps> = ({
       </div>
 
       <div className="card">
-        <div className="card-title">Water Source *</div>
+        <div className="card-title">{t(lang, 'waterSource')}</div>
         <div className="source-grid">
-          {SOURCE_TYPES.map(source => (
+          {localizedSources.map(source => (
             <button key={source.id}
               className={`source-card ${sourceType === source.id ? 'selected' : ''}`}
               onClick={() => setSourceType(source.id)} type="button">
@@ -364,9 +468,9 @@ const ReportPage: React.FC<ReportPageProps> = ({
       </div>
 
       <div className="card">
-        <div className="card-title">What do you observe?</div>
+        <div className="card-title">{t(lang, 'whatObserve')}</div>
         <div className="chip-container">
-          {SYMPTOM_OPTIONS.map(symptom => (
+          {localizedSymptoms.map(symptom => (
             <button key={symptom.id}
               className={`chip ${selectedSymptoms.includes(symptom.id) ? 'selected' : ''}`}
               onClick={() => toggleSymptom(symptom.id)} type="button">{symptom.label}</button>
@@ -375,39 +479,44 @@ const ReportPage: React.FC<ReportPageProps> = ({
       </div>
 
       <div className="card" style={{ border: '1px solid #1565C0' }}>
-        <div className="card-title">📎 Evidence Submission for AI Agent</div>
-        <div className="text-muted" style={{ marginBottom: 10 }}>Supports multi-modality: Photo + Voice</div>
+        <div className="card-title">{t(lang, 'evidenceSubmission')}</div>
+        <div className="text-muted" style={{ marginBottom: 10 }}>{t(lang, 'supportsMultimodal')}</div>
         <div style={{ display: 'flex', gap: 10, marginBottom: 10 }}>
           <button onClick={() => fileInputRef.current?.click()}
             style={{ flex: 1, border: photoBase64 ? '2px solid #2E7D32' : '2px dashed #BDBDBD', borderRadius: 10, padding: '12px 8px', textAlign: 'center', background: photoBase64 ? '#E8F5E9' : '#FAFAFA', fontSize: 12 }}
             type="button">
             <div style={{ fontSize: 22 }}>📷</div>
-            <div style={{ fontWeight: 600, marginTop: 4 }}>{photoBase64 ? '✓ Photo Added' : 'Add Photo'}</div>
-            <div className="text-muted">White vessel photo</div>
+            <div style={{ fontWeight: 600, marginTop: 4 }}>{photoBase64 ? t(lang, 'photoAdded') : t(lang, 'addPhoto')}</div>
+            <div className="text-muted">{t(lang, 'whiteVesselPhoto')}</div>
           </button>
           <button onClick={startVoice}
             style={{ flex: 1, border: listening ? '2px solid #1565C0' : '2px dashed #BDBDBD', borderRadius: 10, padding: '12px 8px', textAlign: 'center', background: listening ? '#E3F2FD' : '#FAFAFA', fontSize: 12 }}
             type="button">
             <div style={{ fontSize: 22 }}>🎤</div>
-            <div style={{ fontWeight: 600, marginTop: 4 }}>{listening ? 'Listening...' : 'Describe by Voice'}</div>
-            <div className="text-muted">Speak symptoms</div>
+            <div style={{ fontWeight: 600, marginTop: 4 }}>{listening ? t(lang, 'listening') : t(lang, 'describeByVoice')}</div>
+            <div className="text-muted">{t(lang, 'speakSymptoms')}</div>
           </button>
         </div>
         <input ref={fileInputRef} type="file" accept="image/*" onChange={handlePhotoSelect} style={{ display: 'none' }} />
         {photoPreview && <img src={photoPreview} alt="Water sample" style={{ width: '100%', height: 100, objectFit: 'cover', borderRadius: 8, marginBottom: 8 }} />}
         {description && <div style={{ background: '#F5F5F5', borderRadius: 8, padding: 10, fontSize: 13, marginBottom: 8 }}>🎤 "{description}"</div>}
-        <textarea className="text-input" placeholder="Or type your description here..."
+        <textarea className="text-input" placeholder={t(lang, 'typeDescriptionHere')}
           value={description} onChange={e => setDescription(e.target.value.slice(0, 500))} rows={3} />
       </div>
 
       <div className="card">
-        <div className="card-title">Location *</div>
-        <input className="text-input" placeholder="6-digit Pincode (e.g. 500032)"
+        <div className="card-title">{t(lang, 'locationRequired')}</div>
+        <input className="text-input" placeholder={t(lang, 'pincodePlaceholder')}
           value={pincode} onChange={e => setPincode(e.target.value.replace(/\D/g, '').slice(0, 6))} inputMode="numeric" />
-        <input className="text-input mt-8" placeholder="Pin / Area name (e.g. Kondapur)"
+        <input className="text-input mt-8" placeholder={t(lang, 'areaPlaceholder')}
           value={areaName} onChange={e => setAreaName(e.target.value.slice(0, 100))} />
+        <input className="text-input mt-8" placeholder={t(lang, 'colonyPlaceholder')}
+          value={colonyName} onChange={e => setColonyName(e.target.value.slice(0, 100))} />
+        <div className="text-muted mt-8" style={{ color: '#1565C0' }}>
+          {t(lang, 'colonyHint')}
+        </div>
         <div className="text-muted mt-8" style={{ color: '#4CAF50' }}>
-          🔒 Only your pincode is stored — no street address, no GPS
+          {t(lang, 'privacyNote')}
         </div>
       </div>
 
@@ -421,7 +530,7 @@ const ReportPage: React.FC<ReportPageProps> = ({
 
         {!loading && (
           <button className="btn-primary" onClick={handleSubmit} type="button">
-            ✨ Continue to Deep AI Agent Analysis
+            {t(lang, 'continueToAnalysis')}
           </button>
         )}
 
@@ -431,7 +540,10 @@ const ReportPage: React.FC<ReportPageProps> = ({
             onViewResults={() => {
               const result = pendingResultRef.current;
               const pin = pendingPincodeRef.current;
-              if (result) onReportComplete(result, pin);
+              if (result) {
+                setLoading(false); // clean state before navigating
+                onReportComplete(result, pin);
+              }
             }}
           />
         )}

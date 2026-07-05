@@ -1,8 +1,9 @@
 """
 Module: api/routers/map_data.py
-UPDATE: /map/topology now accepts optional ?source_type= query param.
-When provided, filters topology data to only that source type.
-When omitted or 'all', returns all source types (existing behaviour).
+UPDATED: TopologyPoint now includes colony_name. When multiple colonies exist
+within the same area (grouped by source_type too), each colony returns as a
+SEPARATE point — this is what allows the map to show granular per-colony
+markers instead of one blended area-level dot.
 """
 
 import sqlite3
@@ -18,7 +19,8 @@ DB_PATH = "data/reports.db"
 class TopologyPoint(BaseModel):
     pincode: str
     area_name: str
-    source_type: str = "unknown"  # NEW field
+    colony_name: str = "Unspecified"
+    source_type: str = "unknown"
     avg_score: float
     report_count: int
     primary_contaminant: str
@@ -37,11 +39,11 @@ async def get_topology(
     )
 ):
     """
-    Returns topology data for the community map.
-    NEW: optional source_type filter — when a citizen selects
-    'Borewell' in the UI dropdown, only borewell-sourced scores
-    are returned, showing that specific infrastructure's water quality
-    independent of municipal/hand pump/open well data in the same area.
+    Returns topology data for the community map, now at colony granularity.
+    Each row is a distinct (pincode, area_name, colony_name, source_type)
+    combination — meaning MIG Colony and LIG Colony within the same
+    Nallagandla/pincode/source will appear as separate map points with
+    potentially very different scores, instead of being blended into one.
     """
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -49,17 +51,17 @@ async def get_topology(
 
     if source_type and source_type != "all":
         cursor.execute("""
-            SELECT pincode, area_name, source_type, avg_score, report_count,
+            SELECT pincode, area_name, colony_name, source_type, avg_score, report_count,
                    primary_contaminant, colour_band, lat, lng, last_updated
             FROM topology_scores
             WHERE source_type = ?
             ORDER BY avg_score ASC
         """, (source_type,))
     else:
-        # No filter — aggregate across ALL source types per area (existing behaviour)
+        # No source filter — aggregate across sources but KEEP colony granularity
         cursor.execute("""
             SELECT
-                pincode, area_name,
+                pincode, area_name, colony_name,
                 'all' as source_type,
                 AVG(avg_score) as avg_score,
                 SUM(report_count) as report_count,
@@ -67,7 +69,7 @@ async def get_topology(
                 colour_band,
                 lat, lng, last_updated
             FROM topology_scores
-            GROUP BY pincode, area_name
+            GROUP BY pincode, area_name, colony_name
             ORDER BY avg_score ASC
         """)
 
@@ -81,6 +83,7 @@ async def get_topology(
         results.append(TopologyPoint(
             pincode=row["pincode"],
             area_name=row["area_name"],
+            colony_name=row["colony_name"] or "Unspecified",
             source_type=row["source_type"],
             avg_score=row["avg_score"],
             report_count=row["report_count"],

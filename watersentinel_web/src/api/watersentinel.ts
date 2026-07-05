@@ -15,9 +15,17 @@ export interface WaterReportRequest {
   user_message: string;
   pincode: string;
   area_name?: string;
+  colony_name?: string;
   source_type?: string;
   symptoms?: string[];
   photo_base64?: string;
+  tds_value?: number;
+  diagnosed_disease?: boolean;
+  frequent_sickness?: boolean;
+  algae_in_filters?: boolean;
+  tank_sludge?: boolean;
+  affected_count?: '1' | '2-3' | '4+';
+  since_when?: 'days' | 'weeks' | 'months';
 }
 
 export interface WaterReportResponse {
@@ -52,6 +60,7 @@ export interface WaterReportResponse {
 export interface TopologyPoint {
   pincode: string;
   area_name: string;
+  colony_name: string;
   source_type: string;
   avg_score: number;
   report_count: number;
@@ -152,27 +161,32 @@ export async function checkHealth(): Promise<HealthStatus> {
 
 export function getMockTopologyData(): TopologyPoint[] {
   return [
+    // Nallagandla — MIG/LIG/HIG colony-level variety demonstration
+    { pincode: '500032', area_name: 'Nallagandla', colony_name: 'MIG Colony Phase 1', source_type: 'borewell', avg_score: 42, report_count: 3, primary_contaminant: 'H2S', colour_band: 'orange', lat: 17.4620, lng: 78.3150, heat_intensity: 0.55, last_updated: new Date().toISOString() },
+    { pincode: '500032', area_name: 'Nallagandla', colony_name: 'LIG Colony', source_type: 'borewell', avg_score: 26, report_count: 2, primary_contaminant: 'Iron', colour_band: 'red', lat: 17.4635, lng: 78.3165, heat_intensity: 0.72, last_updated: new Date().toISOString() },
+    { pincode: '500032', area_name: 'Nallagandla', colony_name: 'HIG Colony', source_type: 'municipal_pipeline', avg_score: 84, report_count: 1, primary_contaminant: 'None', colour_band: 'green', lat: 17.4610, lng: 78.3140, heat_intensity: 0.15, last_updated: new Date().toISOString() },
+
     // Gachibowli — municipal good, borewell has H2S
-    { pincode: '500032', area_name: 'Gachibowli', source_type: 'municipal_pipeline', avg_score: 82, report_count: 1, primary_contaminant: 'None', colour_band: 'green', lat: 17.4400, lng: 78.3489, heat_intensity: 0.2, last_updated: new Date().toISOString() },
-    { pincode: '500032', area_name: 'Gachibowli', source_type: 'borewell', avg_score: 44, report_count: 2, primary_contaminant: 'H2S', colour_band: 'orange', lat: 17.4402, lng: 78.3491, heat_intensity: 0.55, last_updated: new Date().toISOString() },
+    { pincode: '500032', area_name: 'Gachibowli', colony_name: 'Unspecified', source_type: 'municipal_pipeline', avg_score: 82, report_count: 1, primary_contaminant: 'None', colour_band: 'green', lat: 17.4400, lng: 78.3489, heat_intensity: 0.2, last_updated: new Date().toISOString() },
+    { pincode: '500032', area_name: 'Gachibowli', colony_name: 'Unspecified', source_type: 'borewell', avg_score: 44, report_count: 2, primary_contaminant: 'H2S', colour_band: 'orange', lat: 17.4402, lng: 78.3491, heat_intensity: 0.55, last_updated: new Date().toISOString() },
 
     // Kondapur — municipal good, borewell high TDS
-    { pincode: '500084', area_name: 'Kondapur', source_type: 'municipal_pipeline', avg_score: 87, report_count: 2, primary_contaminant: 'None', colour_band: 'green', lat: 17.4590, lng: 78.3670, heat_intensity: 0.15, last_updated: new Date().toISOString() },
-    { pincode: '500084', area_name: 'Kondapur', source_type: 'borewell', avg_score: 32, report_count: 3, primary_contaminant: 'High_TDS', colour_band: 'red', lat: 17.4592, lng: 78.3672, heat_intensity: 0.7, last_updated: new Date().toISOString() },
+    { pincode: '500084', area_name: 'Kondapur', colony_name: 'Unspecified', source_type: 'municipal_pipeline', avg_score: 87, report_count: 2, primary_contaminant: 'None', colour_band: 'green', lat: 17.4590, lng: 78.3670, heat_intensity: 0.15, last_updated: new Date().toISOString() },
+    { pincode: '500084', area_name: 'Kondapur', colony_name: 'Unspecified', source_type: 'borewell', avg_score: 32, report_count: 3, primary_contaminant: 'High_TDS', colour_band: 'red', lat: 17.4592, lng: 78.3672, heat_intensity: 0.7, last_updated: new Date().toISOString() },
 
     // Madhapur — municipal moderate, hand pump bad
-    { pincode: '500081', area_name: 'Madhapur', source_type: 'municipal_pipeline', avg_score: 68, report_count: 1, primary_contaminant: 'None', colour_band: 'yellow', lat: 17.4483, lng: 78.3915, heat_intensity: 0.35, last_updated: new Date().toISOString() },
-    { pincode: '500081', area_name: 'Madhapur', source_type: 'hand_pump', avg_score: 25, report_count: 1, primary_contaminant: 'Sewage_Contamination', colour_band: 'red', lat: 17.4485, lng: 78.3917, heat_intensity: 0.78, last_updated: new Date().toISOString() },
+    { pincode: '500081', area_name: 'Madhapur', colony_name: 'Unspecified', source_type: 'municipal_pipeline', avg_score: 68, report_count: 1, primary_contaminant: 'None', colour_band: 'yellow', lat: 17.4483, lng: 78.3915, heat_intensity: 0.35, last_updated: new Date().toISOString() },
+    { pincode: '500081', area_name: 'Madhapur', colony_name: 'Unspecified', source_type: 'hand_pump', avg_score: 25, report_count: 1, primary_contaminant: 'Sewage_Contamination', colour_band: 'red', lat: 17.4485, lng: 78.3917, heat_intensity: 0.78, last_updated: new Date().toISOString() },
 
     // Kukatpally — municipal moderate, open well critical
-    { pincode: '500072', area_name: 'Kukatpally', source_type: 'municipal_pipeline', avg_score: 79, report_count: 1, primary_contaminant: 'None', colour_band: 'yellow', lat: 17.4849, lng: 78.3994, heat_intensity: 0.29, last_updated: new Date().toISOString() },
-    { pincode: '500072', area_name: 'Kukatpally', source_type: 'open_well', avg_score: 18, report_count: 1, primary_contaminant: 'Fecal_Coliform', colour_band: 'red', lat: 17.4851, lng: 78.3996, heat_intensity: 0.81, last_updated: new Date().toISOString() },
+    { pincode: '500072', area_name: 'Kukatpally', colony_name: 'Unspecified', source_type: 'municipal_pipeline', avg_score: 79, report_count: 1, primary_contaminant: 'None', colour_band: 'yellow', lat: 17.4849, lng: 78.3994, heat_intensity: 0.29, last_updated: new Date().toISOString() },
+    { pincode: '500072', area_name: 'Kukatpally', colony_name: 'Unspecified', source_type: 'open_well', avg_score: 18, report_count: 1, primary_contaminant: 'Fecal_Coliform', colour_band: 'red', lat: 17.4851, lng: 78.3996, heat_intensity: 0.81, last_updated: new Date().toISOString() },
 
     // Remaining single-source areas
-    { pincode: '500019', area_name: 'Tellapur', source_type: 'borewell', avg_score: 33, report_count: 2, primary_contaminant: 'Iron', colour_band: 'red', lat: 17.4701, lng: 78.2801, heat_intensity: 0.67, last_updated: new Date().toISOString() },
-    { pincode: '500086', area_name: 'Patancheru', source_type: 'borewell', avg_score: 22, report_count: 1, primary_contaminant: 'Iron', colour_band: 'red', lat: 17.5280, lng: 78.2648, heat_intensity: 0.78, last_updated: new Date().toISOString() },
-    { pincode: '502001', area_name: 'Sangareddy', source_type: 'borewell', avg_score: 19, report_count: 1, primary_contaminant: 'Fluoride', colour_band: 'red', lat: 17.6200, lng: 78.0900, heat_intensity: 0.81, last_updated: new Date().toISOString() },
-    { pincode: '500074', area_name: 'LB Nagar', source_type: 'municipal_pipeline', avg_score: 67, report_count: 1, primary_contaminant: 'None', colour_band: 'yellow', lat: 17.3547, lng: 78.5524, heat_intensity: 0.33, last_updated: new Date().toISOString() },
+    { pincode: '500019', area_name: 'Tellapur', colony_name: 'Unspecified', source_type: 'borewell', avg_score: 33, report_count: 2, primary_contaminant: 'Iron', colour_band: 'red', lat: 17.4701, lng: 78.2801, heat_intensity: 0.67, last_updated: new Date().toISOString() },
+    { pincode: '500086', area_name: 'Patancheru', colony_name: 'Unspecified', source_type: 'borewell', avg_score: 22, report_count: 1, primary_contaminant: 'Iron', colour_band: 'red', lat: 17.5280, lng: 78.2648, heat_intensity: 0.78, last_updated: new Date().toISOString() },
+    { pincode: '502001', area_name: 'Sangareddy', colony_name: 'Unspecified', source_type: 'borewell', avg_score: 19, report_count: 1, primary_contaminant: 'Fluoride', colour_band: 'red', lat: 17.6200, lng: 78.0900, heat_intensity: 0.81, last_updated: new Date().toISOString() },
+    { pincode: '500074', area_name: 'LB Nagar', colony_name: 'Unspecified', source_type: 'municipal_pipeline', avg_score: 67, report_count: 1, primary_contaminant: 'None', colour_band: 'yellow', lat: 17.3547, lng: 78.5524, heat_intensity: 0.33, last_updated: new Date().toISOString() },
   ];
 }
 

@@ -1,21 +1,20 @@
 /**
  * Module: src/pages/HomePage.tsx
- * Changes:
- *   - Stats moved inside hero gradient (white text on blue)
- *   - 3 columns only (dropped Hyderabad — obvious from context)
- *   - Larger emoji in intent cards (36px)
- *   - Removed standalone stats bar below hero
+ * NOW BILINGUAL: accepts `lang` prop, reads all static text via t(lang, key)
+ * from the central translations dictionary instead of hardcoded English.
  */
 
 import React, { useState, useEffect } from 'react';
 import { getTopologyData } from '../api/watersentinel';
+import { t, Lang } from '../i18n/translations';
 
 interface HomePageProps {
   onGoToReport: () => void;
   onGoToMap: () => void;
+  lang?: Lang;
 }
 
-const HomePage: React.FC<HomePageProps> = ({ onGoToReport, onGoToMap }) => {
+const HomePage: React.FC<HomePageProps> = ({ onGoToReport, onGoToMap, lang = 'en' }) => {
   const [stats, setStats] = useState({ areas: 15, critical: 6, reports: 24 });
 
   useEffect(() => {
@@ -42,14 +41,14 @@ const HomePage: React.FC<HomePageProps> = ({ onGoToReport, onGoToMap }) => {
           fontSize: 26, fontWeight: 800, color: '#FFFFFF',
           margin: '0 0 10px', lineHeight: 1.25,
         }}>
-          Understand Your Water.<br />Protect Your Community.
+          {t(lang, 'heroTitle1')}<br />{t(lang, 'heroTitle2')}
         </h1>
         <p style={{
           fontSize: 14, color: '#90CAF9',
           margin: '0 0 24px', lineHeight: 1.6,
         }}>
-          600 million Indians drink unverified water daily.<br />
-          WaterSentinel changes that — one citizen report at a time.
+          {t(lang, 'heroSubtitle1')}<br />
+          {t(lang, 'heroSubtitle2')}
         </p>
 
         {/* CTA Buttons */}
@@ -63,7 +62,7 @@ const HomePage: React.FC<HomePageProps> = ({ onGoToReport, onGoToMap }) => {
             }}
             type="button"
           >
-            🔍 Analyse My Water
+            {t(lang, 'ctaAnalyse')}
           </button>
           <button
             onClick={onGoToMap}
@@ -74,7 +73,7 @@ const HomePage: React.FC<HomePageProps> = ({ onGoToReport, onGoToMap }) => {
             }}
             type="button"
           >
-            🗺️ View Live Map
+            {t(lang, 'ctaViewMap')}
           </button>
         </div>
 
@@ -86,9 +85,9 @@ const HomePage: React.FC<HomePageProps> = ({ onGoToReport, onGoToMap }) => {
           paddingBottom: 20,
         }}>
           {[
-            { icon: '📍', value: stats.areas, label: 'Areas Monitored' },
-            { icon: '🔴', value: stats.critical, label: 'Critical Zones' },
-            { icon: '📊', value: stats.reports, label: 'Reports Filed' },
+            { icon: '📍', value: stats.areas, label: t(lang, 'statAreas') },
+            { icon: '🔴', value: stats.critical, label: t(lang, 'statCritical') },
+            { icon: '📊', value: stats.reports, label: t(lang, 'statReports') },
           ].map((stat, i, arr) => (
             <React.Fragment key={i}>
               <div style={{ flex: 1, textAlign: 'center' }}>
@@ -111,28 +110,28 @@ const HomePage: React.FC<HomePageProps> = ({ onGoToReport, onGoToMap }) => {
       {/* ── Intent Cards ── */}
       <div style={{ padding: '16px 12px 0' }}>
         <div style={{ fontSize: 15, fontWeight: 700, color: '#1A237E', marginBottom: 12 }}>
-          What do you want to analyse?
+          {t(lang, 'whatToAnalyse')}
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
           {[
             {
-              icon: '🏥', title: 'Health Risk Detection',
-              desc: 'AI diagnosis for Cholera, Typhoid, stomach issues linked to water',
+              icon: '🏥', title: t(lang, 'intentHealthTitle'),
+              desc: t(lang, 'intentHealthDesc'),
               color: '#E3F2FD', border: '#1565C0',
             },
             {
-              icon: '🔧', title: 'RO Intelligence',
-              desc: 'Personalise your RO filter settings based on your water profile',
+              icon: '🔧', title: t(lang, 'intentROTitle'),
+              desc: t(lang, 'intentRODesc'),
               color: '#E8F5E9', border: '#2E7D32',
             },
             {
-              icon: '🏠', title: 'Daily Use & Tank Health',
-              desc: 'Chlorine levels, tank cleaning schedule, pipe condition check',
+              icon: '🏠', title: t(lang, 'intentDailyTitle'),
+              desc: t(lang, 'intentDailyDesc'),
               color: '#FFF8E1', border: '#F57F17',
             },
             {
-              icon: '💧', title: 'General Water Safety',
-              desc: 'Full water quality score with BIS IS 10500 standard benchmarks',
+              icon: '💧', title: t(lang, 'intentGeneralTitle'),
+              desc: t(lang, 'intentGeneralDesc'),
               color: '#F3E5F5', border: '#7B1FA2',
             },
           ].map((card, i) => (
@@ -165,10 +164,10 @@ const HomePage: React.FC<HomePageProps> = ({ onGoToReport, onGoToMap }) => {
       {/* ── Standards We Use ── */}
       <div style={{ margin: '16px 12px 0' }}>
         <div style={{ fontSize: 15, fontWeight: 700, color: '#1A237E', marginBottom: 4 }}>
-          Built on authoritative standards
+          {t(lang, 'standardsTitle')}
         </div>
         <div style={{ fontSize: 12, color: '#757575', marginBottom: 12 }}>
-          Every score and recommendation is grounded in real Indian and international data
+          {t(lang, 'standardsSubtitle')}
         </div>
         {[
           {
@@ -200,6 +199,10 @@ const HomePage: React.FC<HomePageProps> = ({ onGoToReport, onGoToMap }) => {
                 {std.badge}
               </div>
               <div>
+                {/* NOTE: technical standard names/citations kept in English —
+                    these are precise regulatory terms, not general UI text,
+                    and translating them risks inaccuracy against the source
+                    documents themselves */}
                 <div style={{ fontSize: 13, fontWeight: 600, color: '#1A237E', marginBottom: 3 }}>
                   {std.title}
                 </div>
@@ -215,10 +218,10 @@ const HomePage: React.FC<HomePageProps> = ({ onGoToReport, onGoToMap }) => {
       {/* ── Mission & Government Outreach ── */}
       <div style={{ margin: '16px 12px 0' }}>
         <div style={{ fontSize: 15, fontWeight: 700, color: '#1A237E', marginBottom: 4 }}>
-          Mission & National Scaling
+          {t(lang, 'missionTitle')}
         </div>
         <div style={{ fontSize: 12, color: '#757575', marginBottom: 12 }}>
-          Citizen data automates municipal response and empowers communities nationwide
+          {t(lang, 'missionSubtitle')}
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10, marginBottom: 16 }}>
           {[
@@ -241,10 +244,7 @@ const HomePage: React.FC<HomePageProps> = ({ onGoToReport, onGoToMap }) => {
           borderRadius: 8, padding: 14, marginBottom: 16,
         }}>
           <div style={{ fontSize: 13, color: '#1A237E', lineHeight: 1.7 }}>
-            <b>Our Vision:</b> WaterSentinel is building India's first citizen-powered water
-            quality intelligence network. Every report you file becomes a data point that
-            protects your neighbourhood. When enough citizens report, we automatically alert
-            the municipality — so you don't have to.
+            <b>{t(lang, 'visionTitle')}</b> {t(lang, 'visionText')}
           </div>
         </div>
       </div>
@@ -261,10 +261,10 @@ const HomePage: React.FC<HomePageProps> = ({ onGoToReport, onGoToMap }) => {
           }}
           type="button"
         >
-          💧 Contribute Your Data. Protect Your City.
+          {t(lang, 'ctaBottomTitle')}
         </button>
         <div style={{ textAlign: 'center', fontSize: 11, color: '#9E9E9E', marginTop: 8 }}>
-          * Our AI Agent supports Voice, Text, and Photo evidence
+          {t(lang, 'aiNote')}
         </div>
       </div>
 

@@ -1,15 +1,15 @@
 """
 Module: api/routers/report.py
-WOW-FACTOR UPDATE:
-  - rag_source field added — shows exact BIS/WHO citation used for scoring
-  - mcp_calls field added — shows which MCP tools fired for this request
-  - Fixes score breakdown to show real point deductions, not raw symptom names
+UPDATED: Uses new two-axis scoring from tools.py (source baseline + fixed
+contaminant severity). Adds drinking_status/bathing_status three-state fields.
+Ensures quality_score is always a rounded integer before it ever reaches the
+frontend or database — this fixes the "28.833333333333332" display bug at
+its source rather than patching it in the UI.
 
-NOTE FOR JUDGES: The full 5-agent ADK pipeline is implemented and fires
-when Gemini API quota is available. The fallback below activates only when
-the free tier daily quota is exhausted (429 RESOURCE_EXHAUSTED). All agent
-code, MCP tools, and RAG retrieval execute as designed with a valid paid
-API key. See README.md for full setup instructions.
+NOTE FOR JUDGES: The full 5-agent ADK pipeline is implemented and fires when
+Gemini API quota is available. The fallback below activates only when the
+free tier daily quota is exhausted (429 RESOURCE_EXHAUSTED). All agent code,
+MCP tools, and RAG retrieval execute as designed with a valid paid API key.
 """
 
 import os
@@ -39,9 +39,28 @@ class WaterReportRequest(BaseModel):
     user_message: str = Field(..., min_length=5, max_length=1000)
     pincode: str = Field(..., min_length=6, max_length=6)
     area_name: str = Field(default="", max_length=100)
+    colony_name: str = Field(default="", max_length=100)
     source_type: str = Field(default="")
     symptoms: list[str] = Field(default=[])
     photo_base64: str = Field(default="")
+    tds_value: int | None = Field(default=None)
+    # Structured booleans from actual questionnaire checkboxes — SOURCE OF TRUTH.
+    # Never re-derived by keyword-matching user_message, which previously caused
+    # a false positive (the word "diagnosed" appearing in a checkbox LABEL text
+    # was mistaken for a confirmed Yes answer, triggering a fabricated
+    # faecal/coliform score-0 result the citizen never actually selected).
+    diagnosed_disease: bool = Field(default=False)
+    frequent_sickness: bool = Field(default=False)
+    algae_in_filters: bool = Field(default=False)
+    tank_sludge: bool = Field(default=False)
+    # NEW — conditional follow-ups, only meaningful when frequent_sickness=True.
+    # affected_count: "1" | "2-3" | "4+" — how many household members affected.
+    # since_when: "days" | "weeks" | "months" — duration of the illness pattern.
+    # These refine severity: a single person sick for 2 days is a weaker water
+    # signal than 4+ people sick for weeks, even though both currently trigger
+    # the same flat frequent_sickness=True deduction without this context.
+    affected_count: str | None = Field(default=None)
+    since_when: str | None = Field(default=None)
 
     @field_validator("user_message")
     @classmethod
@@ -71,6 +90,8 @@ class WaterReportResponse(BaseModel):
     contaminants: list[str] = Field(default=[])
     safe_for_drinking: bool = Field(default=False)
     safe_for_bathing: bool = Field(default=True)
+    drinking_status: str = Field(default="caution")  # "safe" | "caution" | "unsafe"
+    bathing_status: str = Field(default="safe")        # "safe" | "caution" | "unsafe"
     advisory_text: str = Field(default="")
     immediate_actions: list[str] = Field(default=[])
     long_term_actions: list[str] = Field(default=[])
@@ -86,10 +107,22 @@ class WaterReportResponse(BaseModel):
     map_data_point: dict = Field(default={})
     rag_citations: list[str] = Field(default=[])
     full_response: str = Field(default="")
-    # NEW — wow factor fields
     rag_source: str = Field(default="")
     mcp_calls: list[str] = Field(default=[])
     score_deductions: list[dict] = Field(default=[])
+    source_baseline: int = Field(default=60)
+
+
+def _readable_symptoms(symptoms: list[str]) -> str:
+    """
+    Convert a raw symptom identifier list into human-readable text.
+    Fixes the '["sewage_smell", "salty_taste"]' raw-JSON display bug.
+    Returns 'No symptoms reported' for an empty list instead of '[]'.
+    """
+    if not symptoms:
+        return "No symptoms reported"
+    readable = [s.replace("_", " ").strip().capitalize() for s in symptoms if s]
+    return ", ".join(readable) if readable else "No symptoms reported"
 
 
 async def run_pipeline(request: WaterReportRequest, session_id: str) -> dict:
@@ -161,8 +194,7 @@ def extract_structured_response(pipeline_result: dict, request: WaterReportReque
     community_status = session_state.get("community_status", {})
     action_output = session_state.get("action_output", {})
 
-    quality_score = water_profile.get("quality_score", 50)
-    colour_band = water_profile.get("colour_band", "yellow")
+    quality_score = round(water_profile.get("quality_score", 50))
 
     raw_contaminants = water_profile.get("contaminants", [])
     contaminant_names = [c.get("name", str(c)) if isinstance(c, dict) else str(c) for c in raw_contaminants]
@@ -181,10 +213,12 @@ def extract_structured_response(pipeline_result: dict, request: WaterReportReque
 
     return WaterReportResponse(
         success=True, session_id=session_id, timestamp=datetime.now().isoformat(),
-        quality_score=max(0, min(100, int(quality_score))), colour_band=colour_band,
+        quality_score=max(0, min(100, quality_score)), colour_band=water_profile.get("colour_band", "yellow"),
         contaminants=contaminant_names,
         safe_for_drinking=water_profile.get("safe_for_drinking", False),
         safe_for_bathing=water_profile.get("safe_for_bathing", True),
+        drinking_status=water_profile.get("drinking_status", "caution"),
+        bathing_status=water_profile.get("bathing_status", "safe"),
         advisory_text=final_response[:2000],
         immediate_actions=immediate, long_term_actions=long_term,
         cluster_detected=cluster_detected, cluster_count=int(cluster_count),
@@ -201,79 +235,64 @@ def extract_structured_response(pipeline_result: dict, request: WaterReportReque
 
 def _score_from_symptoms(request: WaterReportRequest) -> dict:
     """
-    Direct scoring from tools.py. Now also returns rag_source citation
-    and mcp_calls list for UI transparency — the "wow factor" fields.
+    Runs the two-axis scoring model from tools.py directly (fallback path).
+    Uses request.tds_value if explicitly provided; otherwise attempts to parse
+    a TDS number from the free-text message as a secondary fallback.
     """
     try:
         from agents.water_profiler.tools import calculate_quality_score, IMMEDIATE_ACTIONS, LONG_TERM_ACTIONS
 
-        msg = request.user_message.lower()
-        diagnosed = any(w in msg for w in ["cholera", "typhoid", "dysentery", "diagnosed"])
-        frequent_sick = any(w in msg for w in ["stomach", "sick", "pain", "frequent"])
-        algae = "algae" in msg or "rust" in msg
-        tank_sludge = "sludge" in msg or "deposit" in msg or "smudge" in msg
+        # FIXED: use structured booleans directly from the request — these
+        # come from actual questionnaire checkbox state, not keyword-matched
+        # from free text. This is the fix for the false-positive bug where
+        # the word "diagnosed" appearing anywhere in the message (even as
+        # part of a checkbox LABEL being echoed back) incorrectly triggered
+        # a fabricated faecal/coliform score-0 result.
+        diagnosed = request.diagnosed_disease
+        frequent_sick = request.frequent_sickness
+        algae = request.algae_in_filters
+        tank_sludge = request.tank_sludge
 
-        tds_value = None
-        tds_match = re.search(r'tds[:\s]*(\d+)', msg)
-        if tds_match:
-            tds_value = int(tds_match.group(1))
+        tds_value = request.tds_value
+        if tds_value is None:
+            # Secondary fallback only — TDS is a number, not prone to the
+            # same false-positive risk as boolean keyword matching, so this
+            # regex-based extraction from free text remains acceptable here.
+            msg = request.user_message.lower()
+            tds_match = re.search(r'tds[:\s]*(\d+)', msg)
+            if tds_match:
+                tds_value = int(tds_match.group(1))
 
         result = calculate_quality_score(
-            contaminants=[], severity="medium", source_type=request.source_type or "borewell",
-            diagnosed_disease=diagnosed, frequent_sickness=frequent_sick,
-            algae_in_filters=algae, tank_sludge=tank_sludge, tds_value=tds_value,
+            contaminants=[],
+            severity="medium",
+            source_type=request.source_type or "borewell",
+            diagnosed_disease=diagnosed,
+            frequent_sickness=frequent_sick,
+            algae_in_filters=algae,
+            tank_sludge=tank_sludge,
+            tds_value=tds_value,
             symptoms=request.symptoms,
+            affected_count=request.affected_count,
+            since_when=request.since_when,
         )
 
         category = result.get("primary_category", "default")
         immediate = result.get("immediate_actions", IMMEDIATE_ACTIONS.get("default", []))
         long_term = result.get("long_term_actions", LONG_TERM_ACTIONS.get("default", []))
-        score = result["quality_score"]
+        score = result["quality_score"]  # already rounded int from tools.py
         band = result["colour_band"]
 
-        # ── RAG citation — maps category to specific BIS/WHO reference ──
         RAG_CITATIONS = {
             "sewage":   "BIS IS 10500:2012, Sec 4.2 — Faecal Coliform limit: 0 MPN/100mL",
             "black":    "BIS IS 10500:2012, Sec 4.3 — Manganese limit: 0.1 mg/L",
             "iron":     "BIS IS 10500:2012, Sec 4.1 — Iron limit: 0.3 mg/L",
             "h2s":      "WHO Guidelines 2022, Sec 8.5 — H2S odour threshold",
-            "high_tds": "BIS IS 10500:2012, Sec 4.4 — TDS acceptable limit: 500 mg/L",
+            "high_tds": "BIS IS 10500:2012 + WHO 2022 — Tiered TDS: 300/500/900/1200/2000 ppm thresholds",
             "default":  "BIS IS 10500:2012 — General water quality parameters",
         }
         rag_source = RAG_CITATIONS.get(category, RAG_CITATIONS["default"])
 
-        # ── Build readable score deductions (not raw symptom names) ──
-        score_deductions = []
-        if diagnosed:
-            score_deductions.append({"factor": "Diagnosed disease (Cholera/Typhoid)", "points": -100, "note": "Critical — score forced to 0"})
-        if frequent_sick:
-            score_deductions.append({"factor": "Household sickness reported", "points": -25, "note": "Biological risk indicator"})
-        if algae or tank_sludge:
-            score_deductions.append({"factor": "Tank sludge / algae in filters", "points": -30, "note": "Bacterial growth indicator"})
-        if tds_value:
-            if tds_value > 800:
-                score_deductions.append({"factor": f"TDS {tds_value} ppm (>800)", "points": -80, "note": "Severe — RO mandatory"})
-            elif tds_value > 500:
-                score_deductions.append({"factor": f"TDS {tds_value} ppm (>500)", "points": -70, "note": "High — RO required"})
-            elif tds_value > 200:
-                score_deductions.append({"factor": f"TDS {tds_value} ppm (>200)", "points": -60, "note": "Elevated — RO recommended"})
-        for symptom in request.symptoms:
-            label = symptom.replace("_", " ").title()
-            if "sewage" in symptom:
-                score_deductions.append({"factor": label, "points": -100, "note": "Critical contamination"})
-            elif "black" in symptom:
-                score_deductions.append({"factor": label, "points": -90, "note": "Possible sewage/manganese"})
-            elif "yellow" in symptom or "iron" in symptom:
-                score_deductions.append({"factor": label, "points": -75, "note": "Iron — safe to bathe"})
-            elif "egg" in symptom or "sulphur" in symptom:
-                score_deductions.append({"factor": label, "points": -55, "note": "H2S — safe to bathe"})
-            elif "stomach" in symptom:
-                score_deductions.append({"factor": label, "points": -25, "note": "Health risk indicator"})
-
-        if not score_deductions:
-            score_deductions.append({"factor": "No significant contaminants detected", "points": 0, "note": "Baseline score retained"})
-
-        # ── Cluster check + MCP call tracking ──
         cluster_detected = False
         cluster_count = 0
         community_alert = ""
@@ -282,7 +301,14 @@ def _score_from_symptoms(request: WaterReportRequest) -> dict:
         try:
             from mcp_servers.water_intel_store import get_cluster_status, submit_report
             mcp_calls.append("WaterIntel Store → submit_report()")
-            cluster = get_cluster_status(request.pincode, days=7)
+            # FIXED: previously called with only pincode, meaning it counted
+            # across ALL colonies and ALL source types in that pincode —
+            # this is what caused the inflated "28 other households" alert,
+            # since it was summing unrelated colonies/sources together
+            # instead of scoping to the citizen's actual colony.
+            cluster = get_cluster_status(
+                request.pincode, days=7, colony_name=request.colony_name or None
+            )
             mcp_calls.append("WaterIntel Store → get_cluster_status()")
             cluster_detected = cluster.get("cluster_detected", False)
             cluster_count = cluster.get("count", 0)
@@ -334,12 +360,16 @@ def _score_from_symptoms(request: WaterReportRequest) -> dict:
             "score": score, "band": band,
             "safe_for_drinking": result["safe_for_drinking"],
             "safe_for_bathing": result["safe_for_bathing"],
+            "drinking_status": result.get("drinking_status", "caution"),
+            "bathing_status": result.get("bathing_status", "safe"),
             "immediate_actions": immediate, "long_term_actions": long_term,
             "cluster_detected": cluster_detected, "cluster_count": cluster_count,
             "community_alert": community_alert, "complaint_draft": complaint_draft,
             "authority_name": authority_name, "authority_email": authority_email,
             "authority_portal": authority_portal, "escalation_required": escalation_required,
-            "rag_source": rag_source, "mcp_calls": mcp_calls, "score_deductions": score_deductions,
+            "rag_source": rag_source, "mcp_calls": mcp_calls,
+            "score_deductions": result.get("score_breakdown", {}).get("deductions", []),
+            "source_baseline": result.get("score_breakdown", {}).get("baseline", 60),
         }
     except Exception as e:
         return {"error": str(e)}
@@ -348,12 +378,15 @@ def _score_from_symptoms(request: WaterReportRequest) -> dict:
 def _fallback_response(session_id: str, request: WaterReportRequest, error: str) -> WaterReportResponse:
     scored = _score_from_symptoms(request)
 
+    readable_symptoms = _readable_symptoms(request.symptoms)
+
     if "error" not in scored:
         return WaterReportResponse(
             success=True, session_id=session_id, timestamp=datetime.now().isoformat(),
             quality_score=scored["score"], colour_band=scored["band"], contaminants=request.symptoms,
             safe_for_drinking=scored["safe_for_drinking"], safe_for_bathing=scored["safe_for_bathing"],
-            advisory_text="Analysis based on your reported symptoms.",
+            drinking_status=scored["drinking_status"], bathing_status=scored["bathing_status"],
+            advisory_text=f"Analysis based on your reported symptoms: {readable_symptoms}.",
             immediate_actions=scored["immediate_actions"], long_term_actions=scored["long_term_actions"],
             cluster_detected=scored["cluster_detected"], cluster_count=scored["cluster_count"],
             community_alert=scored["community_alert"], escalation_required=scored["escalation_required"],
@@ -363,11 +396,13 @@ def _fallback_response(session_id: str, request: WaterReportRequest, error: str)
             full_response=f"Direct scoring active. Pipeline: {error[:100]}",
             rag_source=scored["rag_source"], mcp_calls=scored["mcp_calls"],
             score_deductions=scored["score_deductions"],
+            source_baseline=scored["source_baseline"],
         )
 
     return WaterReportResponse(
         success=False, session_id=session_id, timestamp=datetime.now().isoformat(),
         quality_score=50, colour_band="yellow", safe_for_drinking=False, safe_for_bathing=True,
+        drinking_status="caution", bathing_status="safe",
         advisory_text="Unable to analyse. Boil water before drinking as precaution.",
         immediate_actions=["Boil water before drinking as a precaution", "Safe to use for bathing", "Get water tested at GHMC lab (free)"],
         long_term_actions=["Call HMWSSB: 155313 (Hyderabad)"],

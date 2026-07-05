@@ -11,6 +11,7 @@ import ResultPage from './pages/ResultPage';
 import MapPage from './pages/MapPage';
 import AboutPage from './pages/AboutPage';
 import { WaterReportResponse } from './api/watersentinel';
+import { t, Lang } from './i18n/translations';
 import './index.css';
 
 type Tab = 'home' | 'map' | 'report' | 'about';
@@ -21,7 +22,7 @@ const App: React.FC = () => {
   const [resultPincode, setResultPincode] = useState('');
   const [prefillPincode, setPrefillPincode] = useState('');
   const [prefillArea, setPrefillArea] = useState('');
-  const [lang, setLang] = useState<'en' | 'hi'>('en');
+  const [lang, setLang] = useState<Lang>('en');
 
   const goToMap = () => { setReportResult(null); setActiveTab('map'); };
   const goToReport = () => { setActiveTab('report'); };
@@ -45,6 +46,7 @@ const App: React.FC = () => {
         <HomePage
           onGoToReport={goToReport}
           onGoToMap={goToMap}
+          lang={lang}
         />
       );
     }
@@ -71,8 +73,8 @@ const App: React.FC = () => {
         />
       );
     }
-    if (activeTab === 'map') return <MapPage onReportFromMap={handleReportFromMap} />;
-    if (activeTab === 'about') return <AboutPage />;
+    if (activeTab === 'map') return <MapPage onReportFromMap={handleReportFromMap} lang={lang} />;
+    if (activeTab === 'about') return <AboutPage lang={lang} />;
     return null;
   };
 
@@ -84,9 +86,9 @@ const App: React.FC = () => {
         <div className="brand-banner-left">
           <span className="brand-logo">💧</span>
           <div>
-            <div className="brand-name">WaterSentinel</div>
+            <div className="brand-name">{t(lang, 'brandName')}</div>
             <div className="brand-tagline">
-              India's citizen-powered water quality intelligence
+              {t(lang, 'brandTagline')}
             </div>
           </div>
         </div>
@@ -99,6 +101,10 @@ const App: React.FC = () => {
             <button onClick={() => setLang('hi')}
               style={{ color: lang === 'hi' ? 'white' : '#90CAF9', fontWeight: lang === 'hi' ? 700 : 400, fontSize: 13 }}
               type="button">HI</button>
+            <span style={{ color: '#90CAF9' }}>|</span>
+            <button onClick={() => setLang('te')}
+              style={{ color: lang === 'te' ? 'white' : '#90CAF9', fontWeight: lang === 'te' ? 700 : 400, fontSize: 13 }}
+              type="button">TE</button>
           </div>
         )}
       </div>
@@ -107,19 +113,19 @@ const App: React.FC = () => {
       <nav className="top-nav">
         <button className={`nav-item ${activeTab === 'home' ? 'active' : ''}`}
           onClick={() => setActiveTab('home')} type="button">
-          <span className="nav-icon">🏠</span><span>Home</span>
+          <span className="nav-icon">🏠</span><span>{t(lang, 'navHome')}</span>
         </button>
         <button className={`nav-item ${activeTab === 'map' ? 'active' : ''}`}
           onClick={() => setActiveTab('map')} type="button">
-          <span className="nav-icon">🗺️</span><span>Map</span>
+          <span className="nav-icon">🗺️</span><span>{t(lang, 'navMap')}</span>
         </button>
         <button className={`nav-item ${activeTab === 'report' ? 'active' : ''}`}
           onClick={() => setActiveTab('report')} type="button">
-          <span className="nav-icon">📊</span><span>Report</span>
+          <span className="nav-icon">📊</span><span>{t(lang, 'navReport')}</span>
         </button>
         <button className={`nav-item ${activeTab === 'about' ? 'active' : ''}`}
           onClick={() => setActiveTab('about')} type="button">
-          <span className="nav-icon">ℹ️</span><span>About</span>
+          <span className="nav-icon">ℹ️</span><span>{t(lang, 'navAbout')}</span>
         </button>
       </nav>
 

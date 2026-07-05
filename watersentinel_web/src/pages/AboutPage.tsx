@@ -5,13 +5,18 @@
  */
 
 import React from 'react';
+import { t, Lang } from '../i18n/translations';
 
-const AboutPage: React.FC = () => {
+interface AboutPageProps {
+  lang?: Lang;
+}
+
+const AboutPage: React.FC<AboutPageProps> = ({ lang = 'en' }) => {
   return (
     <div>
       {/* How It Works */}
       <div className="card">
-        <div className="card-title">How It Works</div>
+        <div className="card-title">{t(lang, 'howItWorks')}</div>
         {[
           { icon: '📝', title: 'You Report', desc: 'Describe what you observe — smell, colour, taste. No sensor needed.' },
           { icon: '🤖', title: 'AI Analyses', desc: '5 AI agents diagnose your water against BIS IS 10500 Indian standards.' },
@@ -35,7 +40,7 @@ const AboutPage: React.FC = () => {
 
       {/* AI Architecture */}
       <div className="card">
-        <div className="card-title">🧠 AI Architecture</div>
+        <div className="card-title">{t(lang, 'aiArchitecture')}</div>
         {[
           { name: 'Orchestrator', desc: 'Coordinates all agents' },
           { name: 'SourceSense', desc: 'Classifies water source and symptoms' },
@@ -58,7 +63,7 @@ const AboutPage: React.FC = () => {
 
       {/* Privacy */}
       <div className="card">
-        <div className="card-title">🔒 Privacy</div>
+        <div className="card-title">{t(lang, 'privacy')}</div>
         {[
           'Only your pincode is stored — never your street address or GPS coordinates',
           'Photos are analysed in memory and immediately discarded',
@@ -74,7 +79,7 @@ const AboutPage: React.FC = () => {
 
       {/* Useful Contacts */}
       <div className="card">
-        <div className="card-title">📞 Useful Contacts</div>
+        <div className="card-title">{t(lang, 'usefulContacts')}</div>
         {[
           { label: 'HMWSSB Helpline (Hyderabad)', value: '155313', href: 'tel:155313' },
           { label: 'VWSS Helpline (Vijayawada)', value: '0866-2578888', href: 'tel:08662578888' },
@@ -97,7 +102,7 @@ const AboutPage: React.FC = () => {
 
       {/* Competition Credits */}
       <div className="card">
-        <div className="card-title">🏆 Competition</div>
+        <div className="card-title">{t(lang, 'competition')}</div>
         <div style={{ fontSize: 13, color: '#555', lineHeight: 1.7 }}>
           Submitted to: Kaggle AI Agents Intensive Capstone 2026<br />
           Track: Agents for Good<br />

@@ -1,27 +1,47 @@
 /**
  * Module: src/pages/ResultPage.tsx
- * WOW-FACTOR ADDITIONS:
- *   - RAG citation badge showing exact BIS/WHO source retrieved
- *   - MCP call trail showing which tools fired for this request
- *   - Score breakdown now shows real point deductions, not raw symptom names
+ * Fixes:
+ *   - Pincode shown correctly (passed as prop, not from session_id)
+ *   - EN|HI toggle on header
+ *   - Actions driven by scoring primary_category
+ *   - Score explanation shows actual deductions
  */
 
 import React, { useState } from 'react';
 import { WaterReportResponse, getBandColour, getBandBackground, getBandLabel } from '../api/watersentinel';
+import { t, Lang } from '../i18n/translations';
 
 interface ResultPageProps {
   result: WaterReportResponse;
   onNewReport: () => void;
   onViewMap: () => void;
   pincode?: string;
-  lang?: 'en' | 'hi';
-  onLangChange?: (lang: 'en' | 'hi') => void;
+  lang?: Lang;
+  onLangChange?: (lang: Lang) => void;
 }
 
 const RO_PRODUCTS = [
-  { name: 'Kent Grand Plus 9L RO+UV+UF', price: '₹14,500', rating: '4.3 ★', tag: 'Best for High TDS', link: 'https://www.amazon.in/s?k=kent+grand+plus+ro', color: '#E3F2FD' },
-  { name: 'Aquaguard Enhance 7L RO+UV', price: '₹11,999', rating: '4.1 ★', tag: 'Best for Iron Removal', link: 'https://www.amazon.in/s?k=aquaguard+enhance+ro+uv', color: '#E8F5E9' },
-  { name: 'Pureit Copper+ Mineral RO+UV', price: '₹9,999', rating: '4.2 ★', tag: 'Best Value', link: 'https://www.amazon.in/s?k=pureit+copper+ro', color: '#FFF8E1' },
+  {
+    name: 'Kent Grand Plus 9L RO+UV+UF',
+    price: '₹14,500', rating: '4.3 ★',
+    tag: 'Best for High TDS',
+    link: 'https://www.amazon.in/s?k=kent+grand+plus+ro',
+    color: '#E3F2FD',
+  },
+  {
+    name: 'Aquaguard Enhance 7L RO+UV',
+    price: '₹11,999', rating: '4.1 ★',
+    tag: 'Best for Iron Removal',
+    link: 'https://www.amazon.in/s?k=aquaguard+enhance+ro+uv',
+    color: '#E8F5E9',
+  },
+  {
+    name: 'Pureit Copper+ Mineral RO+UV',
+    price: '₹9,999', rating: '4.2 ★',
+    tag: 'Best Value',
+    link: 'https://www.amazon.in/s?k=pureit+copper+ro',
+    color: '#FFF8E1',
+  },
 ];
 
 const WATER_SERVICES = [
@@ -47,9 +67,14 @@ const ResultPage: React.FC<ResultPageProps> = ({
   const bandBackground = getBandBackground(result.colour_band);
   const bandLabel = getBandLabel(result.colour_band);
 
-  const scoreDeductions = (result as any).score_deductions || [];
-  const ragSource = (result as any).rag_source || '';
-  const mcpCalls = (result as any).mcp_calls || [];
+  // Extract score breakdown from full_response if backend returned it
+  let scoreBreakdown: any = null;
+  try {
+    if (result.full_response && result.full_response.includes('score_breakdown')) {
+      const match = result.full_response.match(/"score_breakdown":\s*(\{[^}]+\})/);
+      if (match) scoreBreakdown = JSON.parse(match[1]);
+    }
+  } catch {}
 
   const copyComplaint = async () => {
     try { await navigator.clipboard.writeText(result.complaint_draft); }
@@ -65,19 +90,26 @@ const ResultPage: React.FC<ResultPageProps> = ({
 
   return (
     <div>
-      {/* Slim context strip */}
-      <div style={{ background: '#F0F4F8', borderBottom: '1px solid #E0E0E0', padding: '8px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <div style={{ fontSize: 13, color: '#555' }}>
-          <span style={{ color: '#1565C0', fontWeight: 600 }}>📍 Pincode {pincode}</span>
-          <span style={{ margin: '0 8px', color: '#BDBDBD' }}>·</span>
-          <span>Analysis & Next Steps</span>
+      {/* Header with lang toggle */}
+      <div className="header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+        <div>
+          <div className="header-title">💧 WaterSentinel</div>
+          <div className="header-subtitle">
+            Analysis & Next Steps{pincode ? ` — Pincode ${pincode}` : ''}
+          </div>
         </div>
-        <div style={{ fontSize: 11, color: '#9E9E9E' }}>{new Date().toLocaleTimeString()}</div>
+        {onLangChange && (
+          <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
+            <button onClick={() => onLangChange('en')} style={{ color: lang === 'en' ? 'white' : '#90CAF9', fontWeight: lang === 'en' ? 700 : 400, fontSize: 13 }} type="button">EN</button>
+            <span style={{ color: '#90CAF9' }}>|</span>
+            <button onClick={() => onLangChange('hi')} style={{ color: lang === 'hi' ? 'white' : '#90CAF9', fontWeight: lang === 'hi' ? 700 : 400, fontSize: 13 }} type="button">HI</button>
+          </div>
+        )}
       </div>
 
       {/* Score Card */}
       <div className="score-card" style={{ background: bandBackground, borderColor: bandColour }}>
-        <div className="text-muted">WQS Score</div>
+        <div className="text-muted">{t(lang, 'wqsScore')}</div>
         <div>
           <span className="score-number" style={{ color: bandColour }}>{result.quality_score}</span>
           <span className="score-max"> / 100</span>
@@ -87,77 +119,45 @@ const ResultPage: React.FC<ResultPageProps> = ({
         <div style={{ display: 'flex', justifyContent: 'center', gap: 32, marginTop: 14 }}>
           <div className="text-center">
             <div style={{ fontSize: 22 }}>{result.safe_for_drinking ? '✅' : '❌'}</div>
-            <div className="text-muted">Drinking</div>
+            <div className="text-muted">{t(lang, 'drinking')}</div>
           </div>
           <div className="text-center">
             <div style={{ fontSize: 22 }}>{result.safe_for_bathing ? '✅' : '❌'}</div>
-            <div className="text-muted">Bathing</div>
+            <div className="text-muted">{t(lang, 'bathing')}</div>
           </div>
         </div>
 
-        {/* RAG Citation Badge — WOW FACTOR */}
-        {ragSource && (
-          <div style={{
-            marginTop: 14, display: 'inline-flex', alignItems: 'center', gap: 6,
-            background: 'rgba(255,255,255,0.85)', borderRadius: 20, padding: '6px 14px',
-            fontSize: 11, color: '#1565C0', fontWeight: 600,
-          }}>
-            📚 Retrieved via RAG: {ragSource}
-          </div>
-        )}
-
+        {/* Score Explanation */}
         <button
           onClick={() => setScoreExpanded(!scoreExpanded)}
-          style={{ display: 'block', margin: '10px auto 0', color: bandColour, fontSize: 13, fontWeight: 600, textDecoration: 'underline' }}
+          style={{ marginTop: 10, color: bandColour, fontSize: 13, fontWeight: 600, textDecoration: 'underline' }}
           type="button"
         >
-          {scoreExpanded ? '▲ Hide Score Explanation' : '▼ "Explain My Score?"'}
+          {scoreExpanded ? t(lang, 'hideExplanation') : t(lang, 'explainScore')}
         </button>
 
         {scoreExpanded && (
-          <div style={{ background: 'rgba(255,255,255,0.9)', borderRadius: 10, padding: 14, marginTop: 10, textAlign: 'left' }}>
-            <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8, color: '#1A237E' }}>
-              WQS Scoring Framework (BIS IS 10500:2012)
-            </div>
-            <div style={{ fontSize: 12, color: '#333', marginBottom: 8 }}>📊 Baseline Score: 100/100</div>
-
-            {/* Real point deductions — not raw symptom names */}
-            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6, color: '#333' }}>Deductions applied:</div>
-            {scoreDeductions.length > 0 ? (
-              scoreDeductions.map((d: any, i: number) => (
-                <div key={i} style={{
-                  display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                  padding: '6px 0', borderBottom: i < scoreDeductions.length - 1 ? '1px solid #F0F0F0' : 'none',
-                }}>
-                  <div>
-                    <div style={{ fontSize: 12, color: '#333', fontWeight: 500 }}>{d.factor}</div>
-                    <div style={{ fontSize: 10, color: '#888' }}>{d.note}</div>
-                  </div>
-                  <div style={{
-                    fontSize: 13, fontWeight: 700,
-                    color: d.points < 0 ? '#B71C1C' : '#2E7D32',
-                    flexShrink: 0, marginLeft: 12,
-                  }}>
-                    {d.points === 0 ? '—' : d.points}
-                  </div>
-                </div>
-              ))
-            ) : (
-              <div style={{ fontSize: 12, color: '#555' }}>No specific deductions recorded.</div>
-            )}
-
-            <div style={{ marginTop: 10, borderTop: '1px solid #ddd', paddingTop: 8, fontSize: 11, color: '#555' }}>
+          <div style={{ background: 'rgba(255,255,255,0.85)', borderRadius: 10, padding: 12, marginTop: 10, textAlign: 'left' }}>
+            <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>WQS Scoring Framework (BIS IS 10500:2012)</div>
+            <div style={{ fontSize: 12, color: '#333' }}>📊 {t(lang, 'baselineScore')}: 100/100</div>
+            <div style={{ fontSize: 12, fontWeight: 600, margin: '8px 0 4px' }}>{t(lang, 'deductionsApplied')}</div>
+            {result.contaminants.length > 0
+              ? result.contaminants.map((c, i) => (
+                  <div key={i} style={{ fontSize: 12, color: '#B71C1C' }}>• {c}</div>
+                ))
+              : <div style={{ fontSize: 12, color: '#555' }}>Based on reported symptoms and questionnaire responses.</div>
+            }
+            <div style={{ marginTop: 8, borderTop: '1px solid #ddd', paddingTop: 8, fontSize: 11 }}>
               <div><b>Sewage smell</b> → Score 0 (stop all use)</div>
               <div><b>Black water</b> → Score 10</div>
               <div><b>Iron / yellow water</b> → Score 25 (safe to bathe)</div>
               <div><b>H2S / egg smell</b> → Score 45 (safe to bathe)</div>
               <div><b>TDS &gt; 200/500/800 ppm</b> → Score 40/30/20</div>
             </div>
-
             <div style={{ marginTop: 8, fontSize: 11, color: '#1565C0', fontStyle: 'italic' }}>
-              The AI agent reasons over retrieved BIS IS 10500 knowledge chunks. Safe for bathing
-              vs drinking is determined by whether contamination is microbial/sewage (unsafe both)
-              or mineral-only (safe to bathe).
+              The AI agent reasons over retrieved BIS IS 10500 knowledge chunks.
+              Safe for bathing vs drinking is determined by whether contamination
+              is microbial/sewage (unsafe both) or mineral-only (safe to bathe).
             </div>
           </div>
         )}
@@ -166,39 +166,29 @@ const ResultPage: React.FC<ResultPageProps> = ({
       {/* Contaminants */}
       {result.contaminants.length > 0 && (
         <div className="card">
-          <div className="card-title">🔬 Household Diagnostic Summary</div>
+          <div className="card-title">{t(lang, 'diagnosticSummary')}</div>
           {result.contaminants.map((c, i) => (
             <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 6 }}>
               <span style={{ color: '#F44336' }}>●</span>
               <span style={{ fontSize: 14 }}>{c}</span>
             </div>
           ))}
+          {result.rag_citations.length > 0 && (
+            <div className="text-muted mt-8" style={{ fontStyle: 'italic' }}>
+              Source: {result.rag_citations[0]}
+            </div>
+          )}
         </div>
       )}
 
-      {/* Antigravity Community Alert + MCP trail — WOW FACTOR */}
+      {/* Antigravity Community Alert */}
       {result.cluster_detected && result.community_alert && (
         <div className="card" style={{ background: '#FFF3E0', borderLeft: '4px solid #E65100' }}>
           <div style={{ fontSize: 22 }}>🚨</div>
-          <div style={{ fontSize: 15, fontWeight: 700, color: '#E65100', margin: '6px 0' }}>Community Alert</div>
+          <div style={{ fontSize: 15, fontWeight: 700, color: '#E65100', margin: '6px 0' }}>{t(lang, 'communityAlert')}</div>
           <div style={{ fontSize: 14, lineHeight: 1.5 }}>{result.community_alert}</div>
-
-          {/* MCP call trail badges */}
-          {mcpCalls.length > 0 && (
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 10 }}>
-              {mcpCalls.map((call: string, i: number) => (
-                <span key={i} style={{
-                  fontSize: 10, background: '#FFFFFF', border: '1px solid #E65100',
-                  color: '#E65100', borderRadius: 12, padding: '3px 9px', fontWeight: 600,
-                }}>
-                  🔌 MCP: {call}
-                </span>
-              ))}
-            </div>
-          )}
-
           <button onClick={onViewMap} style={{ color: '#1565C0', fontSize: 13, fontWeight: 600, marginTop: 10 }} type="button">
-            View Community Map →
+            {t(lang, 'viewCommunityMap')}
           </button>
         </div>
       )}
@@ -206,7 +196,7 @@ const ResultPage: React.FC<ResultPageProps> = ({
       {/* Immediate Actions */}
       {result.immediate_actions.length > 0 && (
         <div className="card">
-          <div className="card-title">⚡ Immediate Action Points</div>
+          <div className="card-title">{t(lang, 'immediateActions')}</div>
           {result.immediate_actions.map((action, i) => (
             <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
               <span style={{ color: '#1565C0', fontWeight: 700, minWidth: 20 }}>{i + 1}.</span>
@@ -219,7 +209,7 @@ const ResultPage: React.FC<ResultPageProps> = ({
       {/* Long Term */}
       {result.long_term_actions.length > 0 && (
         <div className="card">
-          <div className="card-title">🛡️ Long-Term Solution</div>
+          <div className="card-title">{t(lang, 'longTermSolution')}</div>
           {result.long_term_actions.map((action, i) => (
             <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
               <span style={{ color: '#1565C0', fontWeight: 700, minWidth: 20 }}>{i + 1}.</span>
@@ -232,14 +222,21 @@ const ResultPage: React.FC<ResultPageProps> = ({
       {/* Escalation Protocol */}
       {result.escalation_required && result.complaint_draft && (
         <div className="card" style={{ borderLeft: '4px solid #1565C0' }}>
-          <div className="card-title">📋 Escalation Protocol</div>
+          <div className="card-title">{t(lang, 'escalationProtocol')}</div>
           <div style={{ fontSize: 13, color: '#555', marginBottom: 8 }}>To: {result.authority_name}</div>
           {result.authority_email && (
             <div style={{ fontSize: 12, color: '#1565C0', marginBottom: 4 }}>✉️ {result.authority_email}</div>
           )}
-          <button className="btn-primary" style={{ background: '#E65100' }} onClick={() => setComplaintExpanded(!complaintExpanded)} type="button">
-            📨 Submit Official Grievance to HMWSSB
-            <div style={{ fontSize: 11, fontWeight: 400, marginTop: 2 }}>Pre-filled by Agent · Includes diagnosis & data packet</div>
+          <button
+            className="btn-primary"
+            style={{ background: '#E65100' }}
+            onClick={() => setComplaintExpanded(!complaintExpanded)}
+            type="button"
+          >
+            {t(lang, 'submitGrievance')}
+            <div style={{ fontSize: 11, fontWeight: 400, marginTop: 2 }}>
+              {t(lang, 'complaintPrefilled')}
+            </div>
           </button>
           {complaintExpanded && (
             <>
@@ -247,7 +244,7 @@ const ResultPage: React.FC<ResultPageProps> = ({
                 {result.complaint_draft}
               </div>
               <button className="btn-primary mt-8" onClick={copyComplaint} type="button">
-                {copied ? '✓ Copied!' : '📋 Copy Complaint Text'}
+                {copied ? t(lang, 'copied') : t(lang, 'copyComplaint')}
               </button>
             </>
           )}
@@ -256,7 +253,7 @@ const ResultPage: React.FC<ResultPageProps> = ({
 
       {/* Local Safe Water Alternatives */}
       <div className="card">
-        <div className="card-title">💧 Local Safe Water Alternatives</div>
+        <div className="card-title">{t(lang, 'safeWaterAlternatives')}</div>
         {WATER_SERVICES.map((s, i) => (
           <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '10px 0', borderBottom: '1px solid #F0F0F0' }}>
             <span style={{ fontSize: 20 }}>{s.icon}</span>
@@ -267,7 +264,7 @@ const ResultPage: React.FC<ResultPageProps> = ({
             <a href={`tel:${s.phone.replace(/-/g, '')}`} style={{ fontSize: 12, color: '#1565C0', fontWeight: 600 }}>📞 Contact</a>
           </div>
         ))}
-        <div style={{ fontSize: 13, fontWeight: 600, color: '#1A237E', margin: '12px 0 8px' }}>🛒 Recommended RO Purifiers</div>
+        <div style={{ fontSize: 13, fontWeight: 600, color: '#1A237E', margin: '12px 0 8px' }}>{t(lang, 'recommendedRO')}</div>
         <div style={{ display: 'flex', gap: 8, overflowX: 'auto', paddingBottom: 4 }}>
           {RO_PRODUCTS.map((p, i) => (
             <a key={i} href={p.link} target="_blank" rel="noreferrer"
@@ -284,7 +281,7 @@ const ResultPage: React.FC<ResultPageProps> = ({
 
       {/* Rate our Agent */}
       <div className="card">
-        <div className="card-title">⭐ Rate our Agent</div>
+        <div className="card-title">{t(lang, 'rateAgent')}</div>
         {!feedbackSubmitted ? (
           <>
             <div style={{ display: 'flex', gap: 4, marginBottom: 12 }}>
@@ -303,22 +300,22 @@ const ResultPage: React.FC<ResultPageProps> = ({
                   type="button">{chip}</button>
               ))}
             </div>
-            <textarea className="text-input" placeholder="Any other feedback? (optional)"
+            <textarea className="text-input" placeholder={t(lang, 'feedbackPlaceholder')}
               value={feedbackText} onChange={e => setFeedbackText(e.target.value)} rows={2} />
             <button className="btn-primary mt-8" onClick={() => { if (rating > 0) setFeedbackSubmitted(true); }}
-              disabled={rating === 0} type="button">Submit Feedback</button>
+              disabled={rating === 0} type="button">{t(lang, 'submitFeedback')}</button>
           </>
         ) : (
           <div style={{ textAlign: 'center', padding: 16 }}>
             <div style={{ fontSize: 32 }}>🙏</div>
-            <div style={{ fontSize: 15, fontWeight: 600, color: '#2E7D32', marginTop: 8 }}>Thank you for your feedback!</div>
+            <div style={{ fontSize: 15, fontWeight: 600, color: '#2E7D32', marginTop: 8 }}>{t(lang, 'thankYouFeedback')}</div>
           </div>
         )}
       </div>
 
       <div style={{ display: 'flex', gap: 12, margin: 12 }}>
-        <button className="btn-secondary" style={{ flex: 1 }} onClick={onViewMap} type="button">🗺️ View Map</button>
-        <button className="btn-primary" style={{ flex: 1 }} onClick={onNewReport} type="button">+ New Report</button>
+        <button className="btn-secondary" style={{ flex: 1 }} onClick={onViewMap} type="button">{t(lang, 'viewMap')}</button>
+        <button className="btn-primary" style={{ flex: 1 }} onClick={onNewReport} type="button">{t(lang, 'newReport')}</button>
       </div>
     </div>
   );

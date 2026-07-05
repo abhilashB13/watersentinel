@@ -11,6 +11,14 @@ Key Design Decisions:
   - stdio transport: ADK agents launch this as a subprocess.
   - Cluster threshold = 3 reports: statistically meaningful minimum.
   - Separated from ActionBridge: data and action are distinct concerns.
+  - COLONY-LEVEL GRANULARITY (v2): pincode and even area_name are too
+    coarse — the same pincode/area can contain multiple colonies (e.g.
+    MIG/LIG/HIG Colony within Nallagandla, pincode 500032) with very
+    different water quality depending on local infrastructure age,
+    borewell depth, and maintenance. Reports now optionally carry a
+    colony_name, and cluster detection checks colony-level matches FIRST
+    (most personal, most actionable alert — "your actual neighbours"),
+    falling back to area-level matching if colony data isn't available.
 Competition Concepts Demonstrated:
   - MCP Server (primary demonstration of MCP protocol)
   - Multi-agent system (agents call this server's tools)
@@ -43,9 +51,11 @@ mcp = FastMCP(
     name="WaterIntel Store",
     instructions=(
         "Water quality community intelligence database for WaterSentinel. "
-        "Stores citizen reports by pincode, detects contamination clusters, "
-        "and provides topology data for the community map. "
-        "All location data is stored at pincode level only — no PII."
+        "Stores citizen reports by pincode, area, and colony, detects "
+        "contamination clusters at colony or area level, and provides "
+        "topology data for the community map. "
+        "All location data is stored at pincode/area/colony level only — "
+        "no street address, no GPS, no PII."
     ),
 )
 
@@ -67,6 +77,7 @@ def get_db_connection() -> sqlite3.Connection:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             pincode TEXT NOT NULL,
             area_name TEXT,
+            colony_name TEXT DEFAULT '',
             source_type TEXT NOT NULL,
             quality_score INTEGER NOT NULL,
             colour_band TEXT NOT NULL,
@@ -79,15 +90,19 @@ def get_db_connection() -> sqlite3.Connection:
         );
 
         CREATE TABLE IF NOT EXISTS topology_scores (
-            pincode TEXT PRIMARY KEY,
-            area_name TEXT,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            pincode TEXT NOT NULL,
+            area_name TEXT NOT NULL,
+            colony_name TEXT NOT NULL DEFAULT 'Unspecified',
+            source_type TEXT NOT NULL DEFAULT 'unknown',
             avg_score REAL,
             report_count INTEGER,
             primary_contaminant TEXT,
             colour_band TEXT,
             lat REAL,
             lng REAL,
-            last_updated TEXT
+            last_updated TEXT,
+            UNIQUE(pincode, area_name, colony_name, source_type)
         );
 
         CREATE INDEX IF NOT EXISTS idx_pincode
@@ -96,8 +111,19 @@ def get_db_connection() -> sqlite3.Connection:
             ON water_reports(timestamp);
         CREATE INDEX IF NOT EXISTS idx_pincode_timestamp
             ON water_reports(pincode, timestamp);
+        CREATE INDEX IF NOT EXISTS idx_colony
+            ON water_reports(pincode, colony_name);
     """)
     conn.commit()
+
+    # Backfill colony_name column if this DB was created before this version
+    # (safe no-op if the column already exists)
+    try:
+        conn.execute("ALTER TABLE water_reports ADD COLUMN colony_name TEXT DEFAULT ''")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # column already exists
+
     return conn
 
 
@@ -117,22 +143,35 @@ def update_topology_score_internal(
     conn: sqlite3.Connection,
     pincode: str,
     area_name: str,
+    colony_name: str,
+    source_type: str,
     lat: float,
     lng: float,
 ):
-    """Recalculate and update topology score for a pincode from all its reports."""
+    """
+    Recalculate and update topology score for a specific
+    (pincode, area_name, colony_name, source_type) combination.
+    Each combination gets its own row — this is what allows MIG Colony
+    and LIG Colony within the same area/pincode to show different scores,
+    and what allows the same colony's municipal supply vs borewell to
+    also differ.
+    """
+    colony_key = colony_name or "Unspecified"
+
     rows = conn.execute("""
         SELECT quality_score, contaminants
         FROM water_reports
-        WHERE pincode = ?
-    """, (pincode,)).fetchall()
+        WHERE pincode = ? AND area_name = ?
+          AND COALESCE(NULLIF(colony_name, ''), 'Unspecified') = ?
+          AND source_type = ?
+    """, (pincode, area_name, colony_key, source_type)).fetchall()
 
     if not rows:
         return
 
     scores = [row["quality_score"] for row in rows]
-    avg_score = round(sum(scores) / len(scores), 1)
-    colour_band = score_to_colour_band(int(avg_score))
+    avg_score = round(sum(scores) / len(scores))
+    colour_band = score_to_colour_band(avg_score)
 
     all_contaminants = []
     for row in rows:
@@ -145,16 +184,16 @@ def update_topology_score_internal(
     primary_contaminant = (
         max(set(all_contaminants), key=all_contaminants.count)
         if all_contaminants
-        else "None detected"
+        else "None"
     )
 
     conn.execute("""
         INSERT OR REPLACE INTO topology_scores
-        (pincode, area_name, avg_score, report_count, primary_contaminant,
-         colour_band, lat, lng, last_updated)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (pincode, area_name, colony_name, source_type, avg_score, report_count,
+         primary_contaminant, colour_band, lat, lng, last_updated)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
-        pincode, area_name, avg_score, len(rows),
+        pincode, area_name, colony_key, source_type, avg_score, len(rows),
         primary_contaminant, colour_band, lat, lng,
         datetime.now().isoformat(),
     ))
@@ -174,11 +213,17 @@ def submit_report(
     symptoms: list,
     lat: float,
     lng: float,
+    colony_name: str = "",
 ) -> dict:
     """
     Submit a new citizen water quality report to the community database.
     Called by CommunityMapper agent after WaterProfiler completes diagnosis.
-    Location stored as pincode only — no street address, no GPS coordinates.
+    Location stored as pincode + area + optional colony — no street
+    address, no GPS coordinates beyond the general area marker.
+
+    colony_name is optional. When provided, it enables much more precise
+    community alerts (e.g. "your literal neighbours in MIG Colony Phase 1
+    reported this" rather than the more diffuse "somewhere in Nallagandla").
     """
     conn = get_db_connection()
     try:
@@ -186,26 +231,29 @@ def submit_report(
 
         cursor = conn.execute("""
             INSERT INTO water_reports
-            (pincode, area_name, source_type, quality_score, colour_band,
+            (pincode, area_name, colony_name, source_type, quality_score, colour_band,
              contaminants, symptoms, lat, lng, is_mock, timestamp)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
         """, (
-            pincode, area_name, source_type, quality_score, colour_band,
+            pincode, area_name, colony_name or "", source_type, quality_score, colour_band,
             json.dumps(contaminants), json.dumps(symptoms),
             lat, lng, timestamp,
         ))
         report_id = cursor.lastrowid
         conn.commit()
 
-        update_topology_score_internal(conn, pincode, area_name, lat, lng)
+        update_topology_score_internal(
+            conn, pincode, area_name, colony_name or "", source_type, lat, lng
+        )
 
         return {
             "success": True,
             "report_id": report_id,
             "pincode": pincode,
             "area_name": area_name,
+            "colony_name": colony_name or "",
             "timestamp": timestamp,
-            "message": f"Report #{report_id} submitted for {area_name} ({pincode})",
+            "message": f"Report #{report_id} submitted for {colony_name or area_name} ({pincode})",
         }
     except Exception as e:
         return {
@@ -223,26 +271,36 @@ def submit_report(
 def get_pincode_profile(pincode: str) -> dict:
     """
     Get the aggregate water quality profile for a pincode.
-    Returns current topology score, report count, and common contaminants.
+    Returns ALL (area/colony/source) combinations under this pincode,
+    since a single pincode can contain multiple distinct water quality
+    situations depending on colony and source type.
     """
     conn = get_db_connection()
     try:
-        row = conn.execute(
-            "SELECT * FROM topology_scores WHERE pincode = ?", (pincode,)
-        ).fetchone()
+        rows = conn.execute(
+            "SELECT * FROM topology_scores WHERE pincode = ? ORDER BY avg_score ASC",
+            (pincode,)
+        ).fetchall()
 
-        if row:
+        if rows:
             return {
                 "found": True,
                 "pincode": pincode,
-                "area_name": row["area_name"],
-                "avg_score": row["avg_score"],
-                "colour_band": row["colour_band"],
-                "report_count": row["report_count"],
-                "primary_contaminant": row["primary_contaminant"],
-                "lat": row["lat"],
-                "lng": row["lng"],
-                "last_updated": row["last_updated"],
+                "combinations": [
+                    {
+                        "area_name": row["area_name"],
+                        "colony_name": row["colony_name"],
+                        "source_type": row["source_type"],
+                        "avg_score": row["avg_score"],
+                        "colour_band": row["colour_band"],
+                        "report_count": row["report_count"],
+                        "primary_contaminant": row["primary_contaminant"],
+                        "lat": row["lat"],
+                        "lng": row["lng"],
+                        "last_updated": row["last_updated"],
+                    }
+                    for row in rows
+                ],
             }
         else:
             return {
@@ -257,78 +315,147 @@ def get_pincode_profile(pincode: str) -> dict:
 
 # ── MCP Tool 3: get_cluster_status ────────────────────────────────────────────
 
+def _extract_contaminants(rows) -> list:
+    """
+    Parses contaminant JSON from a list of DB rows into a flat, unique,
+    readable list. FIXED: previously this function received a single
+    comma-joined string and did a naive .split(",") before parsing —
+    which corrupts any row whose own JSON array contains more than one
+    item (e.g. '["no_visible_symptom", "stomach_issues"]' gets split
+    mid-array into malformed fragments, producing garbled text like
+    the ']" leaking into a citizen-facing community alert message).
+
+    Now takes the raw row objects directly and parses each row's
+    contaminants field independently, BEFORE any joining — no string
+    splitting on commas ever happens, so multi-item arrays stay intact.
+    """
+    found = set()
+    for row in rows:
+        raw = row["contaminants"] if row["contaminants"] else None
+        if not raw:
+            continue
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, list):
+                for item in parsed:
+                    if item and str(item).strip():
+                        found.add(str(item).strip())
+            elif isinstance(parsed, str) and parsed.strip():
+                found.add(parsed.strip())
+        except (json.JSONDecodeError, ValueError, TypeError):
+            # Raw string wasn't valid JSON — skip rather than guess-parse it
+            continue
+    # Convert to readable text (underscores -> spaces, title case) here,
+    # once, rather than leaving raw identifiers for the caller to clean up
+    readable = [c.replace("_", " ").strip().title() for c in found if c and c.lower() != "none"]
+    return readable[:5]
+
+
 @mcp.tool()
 def get_cluster_status(
     pincode: str,
+    colony_name: str = None,
     contaminant_types: list = None,
     days: int = CLUSTER_WINDOW_DAYS,
 ) -> dict:
     """
-    Check if a community contamination cluster exists for a pincode.
+    Check if a community contamination cluster exists for a citizen's report.
     ANTIGRAVITY TRIGGER: When cluster_detected = True, CommunityMapper
     generates the community alert that surprises the citizen.
-    Cluster = >= 3 reports with matching contaminants within 7 days.
+
+    TIERED MATCHING (colony-first, area fallback):
+      Tier 1 — If colony_name is provided, checks for >= CLUSTER_THRESHOLD
+               reports in the SAME colony within `days`. This is the most
+               personal, most actionable alert — genuinely "your neighbours."
+      Tier 2 — If colony_name wasn't provided, or the colony has fewer
+               than threshold matching reports, falls back to the original
+               area_name-level matching.
+
+    Returns matched_level: "colony" | "area" | "none" so the caller can
+    phrase the alert appropriately.
     """
     conn = get_db_connection()
     try:
         cutoff_date = (datetime.now() - timedelta(days=days)).isoformat()
 
-        rows = conn.execute("""
-            SELECT id, area_name, contaminants, symptoms, timestamp, source_type
-            FROM water_reports
-            WHERE pincode = ? AND timestamp >= ?
-            ORDER BY timestamp ASC
-        """, (pincode, cutoff_date)).fetchall()
+        # Find this pincode's most recent area_name for fallback/context
+        area_row = conn.execute("""
+            SELECT area_name FROM water_reports
+            WHERE pincode = ? ORDER BY timestamp DESC LIMIT 1
+        """, (pincode,)).fetchone()
+        area_name = area_row["area_name"] if area_row else pincode
 
-        if not rows:
-            return {
-                "cluster_detected": False,
-                "pincode": pincode,
-                "count": 0,
-                "message": "No recent reports in this area.",
-            }
-
-        matching_rows = []
-        for row in rows:
-            try:
-                row_contaminants = json.loads(row["contaminants"] or "[]")
-            except (json.JSONDecodeError, TypeError):
-                row_contaminants = []
-
-            if contaminant_types:
+        def _filter_by_contaminant(rows):
+            if not contaminant_types:
+                return rows
+            matched = []
+            for row in rows:
+                try:
+                    row_contaminants = json.loads(row["contaminants"] or "[]")
+                except (json.JSONDecodeError, TypeError):
+                    row_contaminants = []
                 if any(c in row_contaminants for c in contaminant_types):
-                    matching_rows.append(row)
-            else:
-                matching_rows.append(row)
+                    matched.append(row)
+            return matched
 
-        count = len(matching_rows)
-        cluster_detected = count >= CLUSTER_THRESHOLD
+        # ── Tier 1 — Colony-level ────────────────────────────────────────────
+        if colony_name:
+            colony_rows = conn.execute("""
+                SELECT id, area_name, colony_name, contaminants, symptoms, timestamp, source_type
+                FROM water_reports
+                WHERE pincode = ? AND colony_name = ? AND timestamp >= ?
+                ORDER BY timestamp ASC
+            """, (pincode, colony_name, cutoff_date)).fetchall()
 
-        all_contaminants = []
-        for row in matching_rows:
-            try:
-                all_contaminants.extend(json.loads(row["contaminants"] or "[]"))
-            except (json.JSONDecodeError, TypeError):
-                pass
+            colony_matches = _filter_by_contaminant(colony_rows)
+            colony_count = len(colony_matches)
 
-        unique_contaminants = list(set(all_contaminants))
-        area_name = matching_rows[0]["area_name"] if matching_rows else ""
-        earliest = matching_rows[0]["timestamp"][:10] if matching_rows else ""
+            if colony_count >= CLUSTER_THRESHOLD:
+                return {
+                    "cluster_detected": True,
+                    "pincode": pincode,
+                    "area_name": area_name,
+                    "colony_name": colony_name,
+                    "matched_level": "colony",
+                    "count": colony_count,
+                    "threshold": CLUSTER_THRESHOLD,
+                    "time_window_days": days,
+                    "contaminants_found": _extract_contaminants(colony_matches),
+                    "earliest_report": colony_matches[0]["timestamp"][:10] if colony_matches else "",
+                    "message": (
+                        f"{colony_count} households in your colony ({colony_name}, {area_name}) "
+                        f"reported water issues in the last {days} days."
+                    ),
+                }
+
+        # ── Tier 2 — Area-level fallback ──────────────────────────────────────
+        area_rows = conn.execute("""
+            SELECT id, area_name, colony_name, contaminants, symptoms, timestamp, source_type
+            FROM water_reports
+            WHERE pincode = ? AND area_name = ? AND timestamp >= ?
+            ORDER BY timestamp ASC
+        """, (pincode, area_name, cutoff_date)).fetchall()
+
+        area_matches = _filter_by_contaminant(area_rows)
+        area_count = len(area_matches)
+        cluster_detected = area_count >= CLUSTER_THRESHOLD
 
         return {
             "cluster_detected": cluster_detected,
             "pincode": pincode,
             "area_name": area_name,
-            "count": count,
+            "colony_name": colony_name or "",
+            "matched_level": "area" if cluster_detected else "none",
+            "count": area_count,
             "threshold": CLUSTER_THRESHOLD,
             "time_window_days": days,
-            "contaminants_found": unique_contaminants,
-            "earliest_report": earliest,
+            "contaminants_found": _extract_contaminants(area_matches),
+            "earliest_report": area_matches[0]["timestamp"][:10] if area_matches else "",
             "message": (
-                f"{count} households in {area_name} reported water issues "
+                f"{area_count} households in {area_name} reported water issues "
                 f"in the last {days} days."
                 if cluster_detected
-                else f"Only {count} report(s) — below cluster threshold of {CLUSTER_THRESHOLD}."
+                else f"Only {area_count} report(s) — below cluster threshold of {CLUSTER_THRESHOLD}."
             ),
         }
     finally:
@@ -341,7 +468,7 @@ def get_cluster_status(
 def get_area_history(pincode: str, days: int = 30) -> list:
     """
     Get time-series quality score history for a pincode.
-    Used by the mobile app map screen to show water quality trends.
+    Used by the map screen to show water quality trends over time.
     """
     conn = get_db_connection()
     try:
@@ -380,18 +507,24 @@ def update_topology_score(
     new_score: int,
     colour_band: str,
     area_name: str = "",
+    colony_name: str = "",
+    source_type: str = "unknown",
     lat: float = 0.0,
     lng: float = 0.0,
 ) -> dict:
     """
-    Directly update the topology score for a pincode on the map.
-    Called by CommunityMapper after cluster detection.
+    Directly update the topology score for a specific
+    (pincode, area_name, colony_name, source_type) combination.
+    Called by CommunityMapper after cluster detection or manual correction.
     """
     conn = get_db_connection()
     try:
-        existing = conn.execute(
-            "SELECT * FROM topology_scores WHERE pincode = ?", (pincode,)
-        ).fetchone()
+        colony_key = colony_name or "Unspecified"
+
+        existing = conn.execute("""
+            SELECT * FROM topology_scores
+            WHERE pincode = ? AND area_name = ? AND colony_name = ? AND source_type = ?
+        """, (pincode, area_name or pincode, colony_key, source_type)).fetchone()
 
         final_area_name = area_name or (existing["area_name"] if existing else pincode)
         final_lat = lat or (existing["lat"] if existing else 0.0)
@@ -400,11 +533,11 @@ def update_topology_score(
 
         conn.execute("""
             INSERT OR REPLACE INTO topology_scores
-            (pincode, area_name, avg_score, report_count, primary_contaminant,
-             colour_band, lat, lng, last_updated)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (pincode, area_name, colony_name, source_type, avg_score, report_count,
+             primary_contaminant, colour_band, lat, lng, last_updated)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
-            pincode, final_area_name, new_score, final_count,
+            pincode, final_area_name, colony_key, source_type, new_score, final_count,
             existing["primary_contaminant"] if existing else "Unknown",
             colour_band, final_lat, final_lng,
             datetime.now().isoformat(),
@@ -414,9 +547,10 @@ def update_topology_score(
         return {
             "success": True,
             "pincode": pincode,
+            "colony_name": colony_key,
             "new_score": new_score,
             "colour_band": colour_band,
-            "message": f"Topology updated for {final_area_name}: {new_score}/100 ({colour_band})",
+            "message": f"Topology updated for {colony_key}, {final_area_name}: {new_score}/100 ({colour_band})",
         }
     except Exception as e:
         return {"success": False, "error": str(e)}
@@ -429,14 +563,16 @@ def update_topology_score(
 @mcp.tool()
 def get_all_topology_data() -> list:
     """
-    Retrieve all pincode topology scores for rendering the community map.
-    Called by FastAPI /map/topology endpoint for Leaflet heatmap.
+    Retrieve all topology score combinations for rendering the community map.
+    Each row is a distinct (pincode, area_name, colony_name, source_type)
+    combination — meaning the map can render MIG Colony and LIG Colony
+    within the same area as separate, independently-scored points.
     """
     conn = get_db_connection()
     try:
         rows = conn.execute("""
             SELECT
-                pincode, area_name, avg_score, report_count,
+                pincode, area_name, colony_name, source_type, avg_score, report_count,
                 primary_contaminant, colour_band, lat, lng, last_updated
             FROM topology_scores
             WHERE lat IS NOT NULL AND lat != 0
@@ -447,6 +583,8 @@ def get_all_topology_data() -> list:
             {
                 "pincode": row["pincode"],
                 "area_name": row["area_name"],
+                "colony_name": row["colony_name"],
+                "source_type": row["source_type"],
                 "avg_score": row["avg_score"],
                 "report_count": row["report_count"],
                 "primary_contaminant": row["primary_contaminant"],

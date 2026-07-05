@@ -27,6 +27,23 @@ const BAND_COLOURS: Record<string, string> = {
   red: '#B71C1C',
 };
 
+// Parses raw contaminant strings that may be JSON arrays into readable text
+function readableContaminant(raw: string): string {
+  if (!raw || raw === '[]' || raw.trim() === '') return 'None detected';
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      if (parsed.length === 0) return 'None detected';
+      return parsed
+        .map(s => String(s).replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()))
+        .join(', ');
+    }
+  } catch {
+    // Not JSON — plain string, just clean underscores
+  }
+  return raw.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+}
+
 // ── Heatmap layer sub-component ─────────────────────────────────────────────────
 // Leaflet.heat is an imperative plugin, so we access the map instance directly
 // via useMap() and add the heat layer as a side effect.
@@ -122,9 +139,9 @@ const LeafletMap: React.FC<LeafletMapProps> = ({
             <Popup>
               <div style={{ fontSize: 13 }}>
                 <b>{point.area_name}</b><br />
-                Score: <b>{point.avg_score}/100</b><br />
+                Score: <b>{Math.round(point.avg_score)}/100</b><br />
                 Reports: {point.report_count}<br />
-                Issue: {point.primary_contaminant || 'None detected'}<br />
+                Issue: {readableContaminant(point.primary_contaminant || '')}<br />
                 Pincode: {point.pincode}
               </div>
             </Popup>

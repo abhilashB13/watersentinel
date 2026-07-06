@@ -43,13 +43,6 @@ a { color: var(--color-primary); text-decoration: none; }
   min-height: 100vh;
   background: var(--color-bg);
   display: flex;
-  /* Global readability increase — the app's text uses fixed px values
-     throughout inline styles (not rem/em), so a root font-size change
-     wouldn't scale them. `zoom` uniformly scales every pixel value —
-     fonts, padding, borders, icons — as a single-point fix instead of
-     editing hundreds of individual inline fontSize declarations.
-     1.14 ≈ a ~2pt increase on typical 13-14px body text. */
-  zoom: 1.14;
   flex-direction: column;
 }
 

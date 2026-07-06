@@ -16,6 +16,16 @@ interface HomePageProps {
 
 const HomePage: React.FC<HomePageProps> = ({ onGoToReport, onGoToMap, lang = 'en' }) => {
   const [stats, setStats] = useState({ areas: 15, critical: 6, reports: 24 });
+  const [feedbackSummary, setFeedbackSummary] = useState<{ average_rating: number; total_count: number } | null>(null);
+
+  useEffect(() => {
+    import('../api/watersentinel').then(({ API_BASE_URL }) => {
+      fetch(`${API_BASE_URL}/feedback/summary`)
+        .then(r => r.json())
+        .then(data => setFeedbackSummary(data))
+        .catch(() => {});
+    });
+  }, []);
 
   useEffect(() => {
     getTopologyData().then(data => {
@@ -76,6 +86,14 @@ const HomePage: React.FC<HomePageProps> = ({ onGoToReport, onGoToMap, lang = 'en
             {t(lang, 'ctaViewMap')}
           </button>
         </div>
+
+        {/* NEW — Citizen rating, gated at minimum 10 ratings to avoid
+            presenting a misleadingly small sample as meaningful social proof */}
+        {feedbackSummary && feedbackSummary.total_count >= 10 && (
+          <div style={{ textAlign: 'center', marginBottom: 12, fontSize: 13, color: '#FFF8E1' }}>
+            ⭐ {feedbackSummary.average_rating} rated by {feedbackSummary.total_count} citizens
+          </div>
+        )}
 
         {/* Live stats — inside hero, white text, 3 columns */}
         <div style={{

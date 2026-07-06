@@ -135,9 +135,9 @@ export const translations = {
     typeDescriptionHere: "Or type your description here...",
     locationRequired: "Location *",
     pincodePlaceholder: "6-digit Pincode (e.g. 500032)",
-    areaPlaceholder: "Pin / Area name (e.g. Kondapur)",
-    colonyPlaceholder: "Colony / Street name (optional, e.g. MIG Colony Phase 1)",
-    colonyHint: "💡 Adding your colony name makes community alerts more precise — you'll know if it's specifically your neighbours reporting, not just your general area.",
+    areaPlaceholder: "Area / Locality name * (e.g. Kondapur)",
+    colonyPlaceholder: "Colony / Street name * (e.g. MIG Colony Phase 1 — type freely if not suggested)",
+    colonyHint: "💡 Your colony name makes community alerts more precise — you'll know if it's specifically your neighbours reporting, not just your general area. If your colony isn't suggested, just type it — you may be the first to report from there.",
     privacyNote: "🔒 Only your pincode is stored — no street address, no GPS",
     continueToAnalysis: "✨ Continue to Deep AI Agent Analysis",
     keepTabOpen: "Please keep this tab open. Analysis takes 45–60 seconds.",
@@ -150,6 +150,7 @@ export const translations = {
 
     // ── Result Screen ──
     wqsScore: "WQS Score",
+    analysisNextSteps: "Analysis & Next Steps",
     doNotDrink: "Do Not Drink",
     caution: "Caution",
     monitor: "Monitor",
@@ -334,9 +335,9 @@ export const translations = {
     typeDescriptionHere: "या यहां अपना विवरण टाइप करें...",
     locationRequired: "स्थान *",
     pincodePlaceholder: "6-अंकीय पिनकोड (जैसे 500032)",
-    areaPlaceholder: "पिन / क्षेत्र का नाम (जैसे कोंडापुर)",
-    colonyPlaceholder: "कॉलोनी / सड़क का नाम (वैकल्पिक, जैसे MIG कॉलोनी फेज़ 1)",
-    colonyHint: "💡 अपनी कॉलोनी का नाम जोड़ने से सामुदायिक अलर्ट अधिक सटीक हो जाते हैं — आपको पता चलेगा कि क्या यह विशेष रूप से आपके पड़ोसी रिपोर्ट कर रहे हैं, न कि केवल आपका सामान्य क्षेत्र।",
+    areaPlaceholder: "क्षेत्र / इलाके का नाम * (जैसे कोंडापुर)",
+    colonyPlaceholder: "कॉलोनी / सड़क का नाम * (जैसे MIG कॉलोनी फेज़ 1 — सुझाव न मिले तो खुद टाइप करें)",
+    colonyHint: "💡 आपकी कॉलोनी का नाम सामुदायिक अलर्ट को अधिक सटीक बनाता है। यदि आपकी कॉलोनी सुझावों में नहीं है, तो बस टाइप करें — हो सकता है आप वहां से रिपोर्ट करने वाले पहले व्यक्ति हों।",
     privacyNote: "🔒 केवल आपका पिनकोड संग्रहीत है — कोई सड़क का पता नहीं, कोई जीपीएस नहीं",
     continueToAnalysis: "✨ गहन एआई एजेंट विश्लेषण के लिए जारी रखें",
     keepTabOpen: "कृपया इस टैब को खुला रखें। विश्लेषण में 45–60 सेकंड लगते हैं।",
@@ -349,6 +350,7 @@ export const translations = {
 
     // ── Result Screen ──
     wqsScore: "डब्ल्यूक्यूएस स्कोर",
+    analysisNextSteps: "विश्लेषण और अगले कदम",
     doNotDrink: "न पिएं",
     caution: "सावधानी",
     monitor: "निगरानी करें",
@@ -532,9 +534,9 @@ export const translations = {
     typeDescriptionHere: "లేదా ఇక్కడ మీ వివరణ టైప్ చేయండి...",
     locationRequired: "స్థానం *",
     pincodePlaceholder: "6-అంకెల పిన్‌కోడ్ (ఉదా. 500032)",
-    areaPlaceholder: "పిన్ / ప్రాంతం పేరు (ఉదా. కొండాపూర్)",
-    colonyPlaceholder: "కాలనీ / వీధి పేరు (ఐచ్ఛికం, ఉదా. MIG కాలనీ ఫేజ్ 1)",
-    colonyHint: "💡 మీ కాలనీ పేరును జోడించడం వల్ల సమాజ హెచ్చరికలు మరింత ఖచ్చితంగా మారతాయి — ఇది మీ పొరుగువారు ప్రత్యేకంగా నివేదిస్తున్నారో లేదో మీకు తెలుస్తుంది, కేవలం మీ సాధారణ ప్రాంతం కాదు.",
+    areaPlaceholder: "ప్రాంతం / లొకాలిటీ పేరు * (ఉదా. కొండాపూర్)",
+    colonyPlaceholder: "కాలనీ / వీధి పేరు * (ఉదా. MIG కాలనీ ఫేజ్ 1 — సూచన లేకపోతే స్వేచ్ఛగా టైప్ చేయండి)",
+    colonyHint: "💡 మీ కాలనీ పేరు సమాజ హెచ్చరికలను మరింత ఖచ్చితంగా చేస్తుంది. మీ కాలనీ సూచనలలో లేకపోతే, కేవలం టైప్ చేయండి — మీరు అక్కడ నుండి నివేదించే మొదటి వ్యక్తి కావచ్చు.",
     privacyNote: "🔒 మీ పిన్‌కోడ్ మాత్రమే నిల్వ చేయబడుతుంది — వీధి చిరునామా లేదు, GPS లేదు",
     continueToAnalysis: "✨ లోతైన AI ఏజెంట్ విశ్లేషణకు కొనసాగండి",
     keepTabOpen: "దయచేసి ఈ ట్యాబ్‌ను తెరిచి ఉంచండి. విశ్లేషణకు 45–60 సెకన్లు పడుతుంది.",
@@ -547,6 +549,7 @@ export const translations = {
 
     // ── Result Screen ──
     wqsScore: "WQS స్కోరు",
+    analysisNextSteps: "విశ్లేషణ & తదుపరి దశలు",
     doNotDrink: "తాగవద్దు",
     caution: "జాగ్రత్త",
     monitor: "పర్యవేక్షించండి",

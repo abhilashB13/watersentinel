@@ -55,6 +55,22 @@ export interface WaterReportResponse {
   rag_source: string;
   mcp_calls: string[];
   score_deductions: { factor: string; points: number; note: string }[];
+  voice_extracted_symptoms?: { symptom_id: string; matched_phrase: string }[];
+  photo_analysis?: {
+    success: boolean;
+    analysis_attempted: boolean;
+    error?: string;
+    quota_exhausted?: boolean;
+    is_water_photo?: boolean;
+    confidence?: number;
+    water_colour?: string;
+    visible_sediment?: boolean;
+    visible_foam_or_bubbles?: boolean;
+    visible_oily_sheen?: boolean;
+    container_type?: string;
+    notes?: string;
+  } | null;
+  primary_category?: string;
 }
 
 export interface TopologyPoint {
@@ -121,11 +137,31 @@ export async function submitWaterReport(
  * @param sourceType - optional filter: 'municipal_pipeline' | 'borewell' | 'hand_pump' | 'open_well' | 'all'
  *                      Omit or pass 'all' to get aggregated scores across all sources per area.
  */
-export async function getTopologyData(sourceType?: string): Promise<TopologyPoint[]> {
+export async function getAvailableLocations(state?: string): Promise<{ states: string[]; cities: string[] }> {
   try {
-    const url = sourceType && sourceType !== 'all'
-      ? `${API_BASE_URL}/map/topology?source_type=${encodeURIComponent(sourceType)}`
-      : `${API_BASE_URL}/map/topology`;
+    const params = new URLSearchParams();
+    if (state && state !== 'all') params.set('state', state);
+    const qs = params.toString();
+    const response = await fetch(`${API_BASE_URL}/map/available-locations${qs ? '?' + qs : ''}`, {
+      headers: { Accept: 'application/json' },
+    });
+    if (!response.ok) throw new Error(`Status ${response.status}`);
+    return await response.json();
+  } catch (error) {
+    console.warn('Could not fetch available locations:', error);
+    return { states: [], cities: [] };
+  }
+}
+
+export async function getTopologyData(sourceType?: string, daysBack?: number, state?: string, city?: string): Promise<TopologyPoint[]> {
+  try {
+    const params = new URLSearchParams();
+    if (sourceType && sourceType !== 'all') params.set('source_type', sourceType);
+    if (daysBack) params.set('days_back', String(daysBack));
+    if (state && state !== 'all') params.set('state', state);
+    if (city && city !== 'all') params.set('city', city);
+    const qs = params.toString();
+    const url = `${API_BASE_URL}/map/topology${qs ? '?' + qs : ''}`;
 
     const response = await fetch(url, {
       headers: { Accept: 'application/json' },

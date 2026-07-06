@@ -1,12 +1,18 @@
 """
 Module: mcp_servers/action_bridge.py
 Purpose: MCP Server 2 — Civic action generation layer.
-         Generates municipal complaint letters, RTI drafts, and escalation logs.
+         Generates municipal complaint letters, RTI drafts, and
+         escalation logs. Stateless — no database, pure generation.
 Component: MCP Server 2 — ActionBridge
+Inputs: Contaminant data, location, affected count from ActionForge agent
+Outputs: Formatted complaint text, authority contacts, RTI drafts
 Key Design Decisions:
-  - Uses google.genai (new SDK) not deprecated google.generativeai.
-  - Stateless: generates documents, does not store state.
-  - Falls back to template if Gemini API unavailable or quota exhausted.
+  - Stateless design: ActionBridge generates documents but does not
+    store state. WaterIntel Store handles all persistence.
+  - Gemini API for complaint text: LLM generates professionally worded
+    complaints. Falls back to template if API unavailable.
+  - Hardcoded authority map: HMWSSB/VWSS contacts are stable government
+    data. No need for external API.
 Competition Concepts Demonstrated:
   - MCP Server (second MCP server — separation of concerns)
   - Agent skills (complaint generation as a reusable skill)
@@ -19,9 +25,8 @@ from datetime import datetime
 from pathlib import Path
 from dotenv import load_dotenv
 
-# Use new google.genai SDK
 try:
-    from google import genai
+    import google.generativeai as genai
     GENAI_AVAILABLE = True
 except ImportError:
     GENAI_AVAILABLE = False
@@ -116,6 +121,7 @@ AUTHORITY_CONTACTS = {
 
 
 def get_authority(source_type: str, pincode: str) -> dict:
+    """Look up correct municipal authority for source type and pincode."""
     contacts = AUTHORITY_CONTACTS.get(source_type, {})
     if pincode in contacts:
         return contacts[pincode]
@@ -136,6 +142,7 @@ def _generate_fallback_complaint(
     area, pincode, contaminants_text, affected_count,
     authority, bis_text, symptoms_text, date_str, complaint_ref
 ) -> str:
+    """Template complaint when Gemini API is unavailable."""
     return f"""Date: {date_str}
 Reference: {complaint_ref}
 
@@ -173,6 +180,22 @@ Date: {date_str}"""
 
 # ── MCP Tool 1: generate_municipal_complaint ──────────────────────────────────
 
+def generate_template_complaint(area, pincode, contaminants, affected_count, source_type, authority_name=None) -> str:
+    """
+    Public wrapper exposing the template-only complaint path directly,
+    for callers (like report.py) that want to explicitly force the
+    non-Gemini fallback rather than relying on internal try/except.
+    """
+    authority = get_authority(source_type, pincode)
+    contaminants_text = ", ".join(contaminants) if contaminants else "reported water quality issues"
+    date_str = datetime.now().strftime("%d %B %Y")
+    complaint_ref = f"WS-{pincode}-{datetime.now().strftime('%Y%m%d%H%M')}"
+    return _generate_fallback_complaint(
+        area, pincode, contaminants_text, affected_count,
+        authority, "BIS IS 10500:2012", contaminants_text, date_str, complaint_ref
+    )
+
+
 @mcp.tool()
 def generate_municipal_complaint(
     area: str,
@@ -185,8 +208,9 @@ def generate_municipal_complaint(
 ) -> dict:
     """
     Generate a professionally formatted municipal complaint letter.
-    Uses new google.genai SDK. Falls back to template if API unavailable.
-    No PII included — area name and pincode only.
+    Uses Gemini to produce formal complaint text. Falls back to template
+    if Gemini API is unavailable. Mock integration — complaint is generated
+    ready to submit but WaterSentinel does not automatically file it.
     """
     authority = get_authority(source_type, pincode)
     symptoms_text = ", ".join(symptoms or []).replace("_", " ")
@@ -199,7 +223,8 @@ def generate_municipal_complaint(
 
     if GENAI_AVAILABLE and GOOGLE_API_KEY:
         try:
-            client = genai.Client(api_key=GOOGLE_API_KEY)
+            genai.configure(api_key=GOOGLE_API_KEY)
+            model = genai.GenerativeModel("gemini-2.0-flash")
             prompt = f"""Generate a formal water quality complaint letter for an Indian
 municipal water authority. Professional English. Under 300 words.
 
@@ -216,14 +241,9 @@ Reference: {complaint_ref}
 Include: date, reference, to/from, subject, problem description,
 BIS violations, health impact, request for inspection within 7 working days.
 Use [Resident Name] as placeholder for signature."""
-
-            response = client.models.generate_content(
-                model="gemini-2.0-flash",
-                contents=prompt,
-            )
+            response = model.generate_content(prompt)
             complaint_text = response.text
         except Exception:
-            # Quota exhausted or API error — use fallback template
             pass
 
     if not complaint_text:
@@ -252,7 +272,10 @@ Use [Resident Name] as placeholder for signature."""
 
 @mcp.tool()
 def get_authority_contact(pincode: str, source_type: str) -> dict:
-    """Look up the correct municipal authority for a pincode and source type."""
+    """
+    Look up the correct municipal authority contact for a pincode
+    and water source type.
+    """
     authority = get_authority(source_type, pincode)
     return {
         "pincode": pincode,
@@ -278,7 +301,11 @@ def generate_rti_draft(
     authority_name: str,
     days_elapsed: int,
 ) -> dict:
-    """Generate RTI application when complaint unresolved after 30 days."""
+    """
+    Generate an RTI application draft when a municipal complaint has not
+    received a response within 30 days. RTI Act 2005 — authorities must
+    respond within 30 days or face penalties.
+    """
     date_str = datetime.now().strftime("%d %B %Y")
     rti_ref = f"RTI-{complaint_ref}"
 
@@ -294,30 +321,40 @@ Subject: Application under Right to Information Act, 2005
 
 Respected Sir/Madam,
 
-Under Section 6 of the Right to Information Act, 2005, I request
-information regarding complaint {complaint_ref} filed on {complaint_date}
-about contaminated water supply in {area}, Pincode {pincode}.
+Under Section 6 of the Right to Information Act, 2005, I request the
+following information regarding complaint {complaint_ref} filed on
+{complaint_date} about contaminated water supply in {area}, Pincode {pincode}.
 
-It has been {days_elapsed} days since filing with no response.
+It has been {days_elapsed} days since the complaint was filed with no response.
 
 Information Requested:
 1. Current status of complaint {complaint_ref}
-2. Officer assigned and date of inspection
-3. Water quality test results from {area}
-4. Action plan and timeline for remediation
+2. Name and designation of officer assigned
+3. Date of field inspection conducted (if any)
+4. Water quality test results from {area} (if tested)
+5. Action plan and timeline for remediation
+6. If rejected, reasons for the same
 
 Application Fee: Rs.10 (Indian Postal Order attached)
 
 Yours faithfully,
-[Applicant Name], {area}, {pincode}
+[Applicant Name]
+[Address], {area}, {pincode}
 Date: {date_str}"""
 
     return {
         "rti_ref": rti_ref,
         "rti_text": rti_text,
         "filing_authority": f"Public Information Officer, {authority_name}",
-        "application_fee": "Rs.10",
-        "deadline_for_response": "30 days (RTI Act 2005, Section 7)",
+        "application_fee": "Rs.10 (Indian Postal Order or Court Fee Stamp)",
+        "deadline_for_response": "30 days from filing (RTI Act 2005, Section 7)",
+        "submission_instructions": (
+            "1. Print this RTI application.\n"
+            "2. Attach Rs.10 Indian Postal Order.\n"
+            "3. Send by registered post to PIO.\n"
+            "4. Keep acknowledgement for tracking.\n"
+            "5. File First Appeal if no response in 30 days."
+        ),
     }
 
 
@@ -333,7 +370,10 @@ def log_escalation(
     complaint_ref: str,
     source_type: str,
 ) -> dict:
-    """Log civic escalation event to append-only audit log."""
+    """
+    Log a civic escalation event for audit trail.
+    Append-only log — never deletes records.
+    """
     log_path = Path(ACTION_BRIDGE_LOG_PATH)
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -355,18 +395,27 @@ def log_escalation(
     try:
         with open(log_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(log_entry) + "\n")
+
         return {
             "success": True,
             "escalation_id": escalation_id,
             "logged_at": timestamp,
-            "message": f"Escalation logged: {area_name} ({pincode})",
+            "message": (
+                f"Escalation logged: {area_name} ({pincode}), "
+                f"severity={severity}, affected={affected_count}"
+            ),
         }
     except Exception as e:
-        return {"success": False, "escalation_id": escalation_id, "error": str(e)}
+        return {
+            "success": False,
+            "escalation_id": escalation_id,
+            "error": str(e),
+        }
 
 
 # ── Entry Point ────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     print("ActionBridge MCP Server starting...", flush=True)
+    print(f"Escalation log: {ACTION_BRIDGE_LOG_PATH}", flush=True)
     mcp.run(transport="stdio")

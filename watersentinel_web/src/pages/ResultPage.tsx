@@ -8,7 +8,7 @@
  */
 
 import React, { useState } from 'react';
-import { WaterReportResponse, getBandColour, getBandBackground, getBandLabel } from '../api/watersentinel';
+import { WaterReportResponse, getBandColour, getBandBackground, getBandLabel, API_BASE_URL } from '../api/watersentinel';
 import { t, Lang } from '../i18n/translations';
 
 interface ResultPageProps {
@@ -20,29 +20,48 @@ interface ResultPageProps {
   onLangChange?: (lang: Lang) => void;
 }
 
-const RO_PRODUCTS = [
+// Full catalogue — same static products as before, but now each is TAGGED
+// with which contaminant category it's actually suited for, so the
+// recommendation shown matches the citizen's real diagnosis instead of
+// showing identical products to everyone regardless of their water issue.
+const RO_CATALOGUE = [
   {
     name: 'Kent Grand Plus 9L RO+UV+UF',
     price: '₹14,500', rating: '4.3 ★',
-    tag: 'Best for High TDS',
-    link: 'https://www.amazon.in/s?k=kent+grand+plus+ro',
-    color: '#E3F2FD',
+    tag: 'Best for High TDS', matchCategories: ['high_tds'],
+    reason: 'RO membrane specifically rejects dissolved solids — matches your high TDS finding',
+    link: 'https://www.amazon.in/s?k=kent+grand+plus+ro', color: '#E3F2FD',
   },
   {
     name: 'Aquaguard Enhance 7L RO+UV',
     price: '₹11,999', rating: '4.1 ★',
-    tag: 'Best for Iron Removal',
-    link: 'https://www.amazon.in/s?k=aquaguard+enhance+ro+uv',
-    color: '#E8F5E9',
+    tag: 'Best for Iron Removal', matchCategories: ['iron'],
+    reason: 'Includes pre-filter stage needed for iron removal, which plain RO alone does not handle well',
+    link: 'https://www.amazon.in/s?k=aquaguard+enhance+ro+uv', color: '#E8F5E9',
   },
   {
     name: 'Pureit Copper+ Mineral RO+UV',
     price: '₹9,999', rating: '4.2 ★',
-    tag: 'Best Value',
-    link: 'https://www.amazon.in/s?k=pureit+copper+ro',
-    color: '#FFF8E1',
+    tag: 'Best Value', matchCategories: ['default', 'h2s'],
+    reason: 'Balanced option with activated carbon stage, suitable for general water safety and odour concerns',
+    link: 'https://www.amazon.in/s?k=pureit+copper+ro', color: '#FFF8E1',
   },
 ];
+
+// Picks the RO product matching the citizen's actual diagnosed category,
+// falling back to the "default" match if no exact category match exists.
+// Also returns a one-line "why this matches" explanation, which is the
+// real value-add over showing identical static products to every citizen.
+function getMatchedROProducts(primaryCategory: string, tdsValue?: number): typeof RO_CATALOGUE {
+  const exactMatch = RO_CATALOGUE.filter(p => p.matchCategories.includes(primaryCategory));
+  if (exactMatch.length > 0) {
+    const rest = RO_CATALOGUE.filter(p => !exactMatch.includes(p));
+    return [...exactMatch, ...rest];
+  }
+  // Low TDS (<200) — RO would strip beneficial minerals unnecessarily;
+  // still show catalogue but the "reason" text below flags this explicitly
+  return RO_CATALOGUE;
+}
 
 const WATER_SERVICES = [
   { name: 'Tara Water Tank Cleaning', desc: 'Underground & overhead tank cleaning — Hyderabad', phone: '98490-XXXXX', icon: '🚿' },
@@ -50,6 +69,19 @@ const WATER_SERVICES = [
 ];
 
 const RATING_CHIPS = ['Clear Actions', 'Trustworthy', 'Accurate Diagnosis', 'Fast Response', 'Easy to Use'];
+
+// Converts a raw symptom identifier (e.g. "egg_smell", "skin_irritation")
+// into human-readable text (e.g. "Egg Smell", "Skin Irritation"). Fixes the
+// bug where raw underscored identifiers leaked directly into the score
+// explanation's deductions list.
+function readableFactor(raw: string): string {
+  if (!raw) return raw;
+  // If it already looks like a proper sentence (has a space and isn't
+  // snake_case), leave it as-is — this handles the case where the backend
+  // sends a fully-formed factor label like "Frequent sickness / stomach pains".
+  if (raw.includes(' ') && !raw.includes('_')) return raw;
+  return raw.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+}
 
 const ResultPage: React.FC<ResultPageProps> = ({
   result, onNewReport, onViewMap, pincode = '', lang = 'en', onLangChange,
@@ -65,6 +97,7 @@ const ResultPage: React.FC<ResultPageProps> = ({
 
   const bandColour = getBandColour(result.colour_band);
   const bandBackground = getBandBackground(result.colour_band);
+  const scoreDeductions = (result as any).score_deductions || [];
   const bandLabel = getBandLabel(result.colour_band);
 
   // Extract score breakdown from full_response if backend returned it
@@ -90,21 +123,14 @@ const ResultPage: React.FC<ResultPageProps> = ({
 
   return (
     <div>
-      {/* Header with lang toggle */}
-      <div className="header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-        <div>
-          <div className="header-title">💧 WaterSentinel</div>
-          <div className="header-subtitle">
-            Analysis & Next Steps{pincode ? ` — Pincode ${pincode}` : ''}
-          </div>
+      {/* Slim context strip — NO duplicate lang toggle here, the global
+          banner toggle (EN|HI|TE) already covers this on every page */}
+      <div style={{ background: '#F0F4F8', borderBottom: '1px solid #E0E0E0', padding: '8px 16px' }}>
+        <div style={{ fontSize: 13, color: '#555' }}>
+          <span style={{ color: '#1565C0', fontWeight: 600 }}>📍 {t(lang, 'locationRequired').replace(' *', '')} {pincode}</span>
+          <span style={{ margin: '0 8px', color: '#BDBDBD' }}>·</span>
+          <span>{t(lang, 'analysisNextSteps')}</span>
         </div>
-        {onLangChange && (
-          <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
-            <button onClick={() => onLangChange('en')} style={{ color: lang === 'en' ? 'white' : '#90CAF9', fontWeight: lang === 'en' ? 700 : 400, fontSize: 13 }} type="button">EN</button>
-            <span style={{ color: '#90CAF9' }}>|</span>
-            <button onClick={() => onLangChange('hi')} style={{ color: lang === 'hi' ? 'white' : '#90CAF9', fontWeight: lang === 'hi' ? 700 : 400, fontSize: 13 }} type="button">HI</button>
-          </div>
-        )}
       </div>
 
       {/* Score Card */}
@@ -141,18 +167,45 @@ const ResultPage: React.FC<ResultPageProps> = ({
             <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>WQS Scoring Framework (BIS IS 10500:2012)</div>
             <div style={{ fontSize: 12, color: '#333' }}>📊 {t(lang, 'baselineScore')}: 100/100</div>
             <div style={{ fontSize: 12, fontWeight: 600, margin: '8px 0 4px' }}>{t(lang, 'deductionsApplied')}</div>
-            {result.contaminants.length > 0
-              ? result.contaminants.map((c, i) => (
-                  <div key={i} style={{ fontSize: 12, color: '#B71C1C' }}>• {c}</div>
-                ))
-              : <div style={{ fontSize: 12, color: '#555' }}>Based on reported symptoms and questionnaire responses.</div>
-            }
+
+            {/* FIXED: renders the real score_deductions array (factor/points/
+                note) from the backend — human-readable labels, not raw
+                underscored symptom identifiers like "egg_smell" */}
+            {scoreDeductions.length > 0 ? (
+              scoreDeductions.map((d: any, i: number) => (
+                <div key={i} style={{
+                  display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start',
+                  padding: '6px 0', borderBottom: i < scoreDeductions.length - 1 ? '1px solid #F0F0F0' : 'none',
+                }}>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 12, color: '#333', fontWeight: 500 }}>
+                      {readableFactor(d.factor)}
+                    </div>
+                    {d.note && <div style={{ fontSize: 10, color: '#888', marginTop: 2 }}>{d.note}</div>}
+                  </div>
+                  <div style={{
+                    fontSize: 13, fontWeight: 700,
+                    color: d.points < 0 ? '#B71C1C' : '#2E7D32',
+                    flexShrink: 0, marginLeft: 12,
+                  }}>
+                    {d.points === 0 ? '—' : d.points}
+                  </div>
+                </div>
+              ))
+            ) : (
+              <div style={{ fontSize: 12, color: '#555' }}>
+                {result.contaminants.length > 0
+                  ? result.contaminants.map(readableFactor).join(', ')
+                  : 'Based on reported symptoms and questionnaire responses.'}
+              </div>
+            )}
+
             <div style={{ marginTop: 8, borderTop: '1px solid #ddd', paddingTop: 8, fontSize: 11 }}>
               <div><b>Sewage smell</b> → Score 0 (stop all use)</div>
               <div><b>Black water</b> → Score 10</div>
               <div><b>Iron / yellow water</b> → Score 25 (safe to bathe)</div>
               <div><b>H2S / egg smell</b> → Score 45 (safe to bathe)</div>
-              <div><b>TDS &gt; 200/500/800 ppm</b> → Score 40/30/20</div>
+              <div><b>TDS &gt; 300/500/900/1200/2000 ppm</b> → tiered BIS/WHO scoring</div>
             </div>
             <div style={{ marginTop: 8, fontSize: 11, color: '#1565C0', fontStyle: 'italic' }}>
               The AI agent reasons over retrieved BIS IS 10500 knowledge chunks.
@@ -162,6 +215,56 @@ const ResultPage: React.FC<ResultPageProps> = ({
           </div>
         )}
       </div>
+
+      {/* NEW — Voice & Photo Evidence Transparency */}
+      {((result.voice_extracted_symptoms && result.voice_extracted_symptoms.length > 0) || result.photo_analysis) && (
+        <div className="card" style={{ borderLeft: '3px solid #7B1FA2' }}>
+          <div className="card-title">{t(lang, 'voicePhotoAnalysis')}</div>
+
+          {result.voice_extracted_symptoms && result.voice_extracted_symptoms.length > 0 && (
+            <div style={{ marginBottom: result.photo_analysis ? 12 : 0 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: '#4A148C', marginBottom: 4 }}>
+                {t(lang, 'detectedFromDescription')}
+              </div>
+              {result.voice_extracted_symptoms.map((m, i) => (
+                <div key={i} style={{ fontSize: 12, color: '#555', marginBottom: 2 }}>
+                  • {m.symptom_id.replace(/_/g, ' ')} <span style={{ color: '#999', fontStyle: 'italic' }}>({t(lang, 'matched')}: "{m.matched_phrase}")</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {result.photo_analysis && (
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 600, color: '#4A148C', marginBottom: 4 }}>
+                {t(lang, 'photoAnalysisLabel')}
+              </div>
+              {result.photo_analysis.success ? (
+                result.photo_analysis.is_water_photo ? (
+                  <div style={{ fontSize: 12, color: '#555' }}>
+                    <div>✅ {t(lang, 'waterPhotoDetected')} ({result.photo_analysis.confidence}% {t(lang, 'confidence')})</div>
+                    <div>{t(lang, 'colourLabel')}: <b>{result.photo_analysis.water_colour}</b></div>
+                    {result.photo_analysis.visible_sediment && <div>⚠️ {t(lang, 'sedimentVisible')}</div>}
+                    {result.photo_analysis.visible_foam_or_bubbles && <div>⚠️ {t(lang, 'foamVisible')}</div>}
+                    {result.photo_analysis.visible_oily_sheen && <div>🚨 {t(lang, 'oilySheenVisible')}</div>}
+                    {result.photo_analysis.notes && (
+                      <div style={{ fontStyle: 'italic', color: '#777', marginTop: 4 }}>{result.photo_analysis.notes}</div>
+                    )}
+                  </div>
+                ) : (
+                  <div style={{ fontSize: 12, color: '#E65100' }}>
+                    ⚠️ {t(lang, 'notWaterPhoto')} ({result.photo_analysis.confidence}% {t(lang, 'confidence')}) — {t(lang, 'photoNotFactored')}.
+                  </div>
+                )
+              ) : (
+                <div style={{ fontSize: 12, color: '#B71C1C' }}>
+                  ⚠️ {t(lang, 'photoAnalysisCouldNotRun')}{result.photo_analysis.quota_exhausted ? ` — ${t(lang, 'quotaUnavailableNow')}` : ''}. {t(lang, 'photoReceivedNotFactored')}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Contaminants */}
       {result.contaminants.length > 0 && (
@@ -266,17 +369,23 @@ const ResultPage: React.FC<ResultPageProps> = ({
         ))}
         <div style={{ fontSize: 13, fontWeight: 600, color: '#1A237E', margin: '12px 0 8px' }}>{t(lang, 'recommendedRO')}</div>
         <div style={{ display: 'flex', gap: 8, overflowX: 'auto', paddingBottom: 4 }}>
-          {RO_PRODUCTS.map((p, i) => (
+          {getMatchedROProducts(result.primary_category || 'default').map((p, i) => (
             <a key={i} href={p.link} target="_blank" rel="noreferrer"
-              style={{ minWidth: 150, border: '1px solid #E0E0E0', borderRadius: 10, padding: 12, background: p.color, textDecoration: 'none', display: 'block', flexShrink: 0 }}>
+              style={{ minWidth: 170, border: i === 0 ? '2px solid #1565C0' : '1px solid #E0E0E0', borderRadius: 10, padding: 12, background: p.color, textDecoration: 'none', display: 'block', flexShrink: 0 }}>
               <div style={{ fontSize: 10, background: '#1565C0', color: 'white', borderRadius: 4, padding: '2px 6px', display: 'inline-block', marginBottom: 6 }}>{p.tag}</div>
               <div style={{ fontSize: 12, fontWeight: 600, color: '#333', lineHeight: 1.3 }}>{p.name}</div>
               <div style={{ fontSize: 13, color: '#1565C0', fontWeight: 700, marginTop: 6 }}>{p.price}</div>
               <div className="text-muted">{p.rating} · Amazon</div>
+              {i === 0 && <div style={{ fontSize: 10, color: '#2E7D32', marginTop: 6, fontStyle: 'italic', lineHeight: 1.4 }}>✓ {p.reason}</div>}
               <div style={{ fontSize: 11, color: '#1565C0', marginTop: 4 }}>View on Amazon →</div>
             </a>
           ))}
         </div>
+        {result.primary_category && !['iron', 'high_tds', 'h2s'].includes(result.primary_category) && (
+          <div style={{ fontSize: 10, color: '#777', marginTop: 6, fontStyle: 'italic' }}>
+            Note: if your TDS is already low, RO may not be necessary — a simple UV/UF system may suffice.
+          </div>
+        )}
       </div>
 
       {/* Rate our Agent */}
@@ -302,7 +411,22 @@ const ResultPage: React.FC<ResultPageProps> = ({
             </div>
             <textarea className="text-input" placeholder={t(lang, 'feedbackPlaceholder')}
               value={feedbackText} onChange={e => setFeedbackText(e.target.value)} rows={2} />
-            <button className="btn-primary mt-8" onClick={() => { if (rating > 0) setFeedbackSubmitted(true); }}
+            <button className="btn-primary mt-8" onClick={async () => {
+                if (rating === 0) return;
+                setFeedbackSubmitted(true); // optimistic — show thank-you immediately regardless of backend result
+                try {
+                  await fetch(`${API_BASE_URL}/feedback`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                      session_id: result.session_id || '',
+                      rating, feedback_chips: selectedChips, feedback_text: feedbackText,
+                    }),
+                  });
+                } catch (err) {
+                  console.warn('Feedback submission failed (non-fatal):', err);
+                }
+              }}
               disabled={rating === 0} type="button">{t(lang, 'submitFeedback')}</button>
           </>
         ) : (

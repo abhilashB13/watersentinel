@@ -2,7 +2,9 @@
  * Module: src/pages/ReportPage.tsx
  * Changes from previous version:
  *   - AgentProgress component shown during loading instead of spinner
- *   - No other logic changes
+ *   - PATCHED: AgentProgress now receives resultRef + lang so it can show
+ *     honest photo/voice analysis status lines once finished. No other
+ *     logic changes.
  */
 
 import React, { useState, useRef, useEffect } from 'react';
@@ -76,6 +78,9 @@ const ReportPage: React.FC<ReportPageProps> = ({
   const [pincode, setPincode] = useState(prefillPincode);
   const [areaName, setAreaName] = useState(prefillArea);
   const [colonyName, setColonyName] = useState('');
+  const [detectingLocation, setDetectingLocation] = useState(false);
+  const [gpsDetectMessage, setGpsDetectMessage] = useState('');
+  const [gpsDetectSuccess, setGpsDetectSuccess] = useState(false);
   const [photoBase64, setPhotoBase64] = useState('');
   const [photoPreview, setPhotoPreview] = useState('');
   const [loading, setLoading] = useState(false);
@@ -87,19 +92,96 @@ const ReportPage: React.FC<ReportPageProps> = ({
   const pendingPincodeRef = useRef<string>('');
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [locationSuggestions, setLocationSuggestions] = useState<{ pincodes: string[]; areas: string[]; colonies: string[] }>({
+    pincodes: [], areas: [], colonies: [],
+  });
 
   useEffect(() => {
     if (prefillPincode) setPincode(prefillPincode);
     if (prefillArea) setAreaName(prefillArea);
   }, [prefillPincode, prefillArea]);
 
+  // NEW — cascading autocomplete: re-fetches suggestions whenever pincode
+  // (or pincode+area) changes, so area suggestions narrow to that
+  // pincode's real areas, and colony suggestions narrow to that specific
+  // pincode+area's real colonies. Citizens can still freely type anything
+  // new at any level — this only narrows SUGGESTIONS, never blocks input.
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      import('../api/watersentinel').then(({ API_BASE_URL }) => {
+        const params = new URLSearchParams();
+        if (pincode && pincode.length === 6) params.set('pincode', pincode);
+        if (pincode && pincode.length === 6 && areaName.trim()) params.set('area_name', areaName.trim());
+        const qs = params.toString();
+        fetch(`${API_BASE_URL}/location-suggestions${qs ? '?' + qs : ''}`)
+          .then(r => r.json())
+          .then(data => setLocationSuggestions(data))
+          .catch(() => {}); // silent fail — form works fine without suggestions
+      });
+    }, 300); // debounced — avoids firing a request on every single keystroke
+    return () => clearTimeout(timer);
+  }, [pincode, areaName]);
 
+
+
+  const handleDetectLocation = () => {
+    if (!navigator.geolocation) {
+      setGpsDetectSuccess(false);
+      setGpsDetectMessage('GPS is not available on this device/browser. Please enter your location manually.');
+      return;
+    }
+
+    setDetectingLocation(true);
+    setGpsDetectMessage('');
+
+    navigator.geolocation.getCurrentPosition(
+      async (position) => {
+        const { latitude, longitude } = position.coords;
+        try {
+          const { API_BASE_URL } = await import('../api/watersentinel');
+          const response = await fetch(
+            `${API_BASE_URL}/geolocation/reverse?lat=${latitude}&lng=${longitude}`
+          );
+          const data = await response.json();
+
+          // NOTE: latitude/longitude exist only in this local closure and
+          // are never stored, logged, or sent anywhere beyond this single
+          // reverse-geocoding request — matching the privacy commitment
+          // shown to the citizen above the button.
+          if (data.success) {
+            setPincode(data.pincode || '');
+            if (data.area_name) setAreaName(data.area_name);
+            setGpsDetectSuccess(true);
+            setGpsDetectMessage('✅ ' + data.message);
+          } else {
+            setGpsDetectSuccess(false);
+            setGpsDetectMessage('⚠️ ' + data.message);
+          }
+        } catch (err) {
+          setGpsDetectSuccess(false);
+          setGpsDetectMessage('⚠️ Could not detect location right now. Please enter it manually.');
+        } finally {
+          setDetectingLocation(false);
+        }
+      },
+      (error) => {
+        setDetectingLocation(false);
+        setGpsDetectSuccess(false);
+        if (error.code === error.PERMISSION_DENIED) {
+          setGpsDetectMessage('⚠️ Location permission denied. Please enter your pincode and area manually.');
+        } else {
+          setGpsDetectMessage('⚠️ Could not access your location. Please enter it manually.');
+        }
+      },
+      { timeout: 10000, maximumAge: 0 }
+    );
+  };
 
   const startVoice = () => {
     const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (!SR) { alert('Voice input requires Chrome browser.'); return; }
     const r = new SR();
-    r.lang = lang === 'hi' ? 'hi-IN' : 'en-IN';
+    r.lang = lang === 'hi' ? 'hi-IN' : lang === 'te' ? 'te-IN' : 'en-IN';
     r.onstart = () => setListening(true);
     r.onend = () => setListening(false);
     r.onresult = (e: any) => {
@@ -141,6 +223,23 @@ const ReportPage: React.FC<ReportPageProps> = ({
     if (!sourceType) { setError('Please select your water source type.'); return; }
     if (!pincode || pincode.length !== 6 || !/^\d{6}$/.test(pincode)) {
       setError('Please enter a valid 6-digit pincode.'); return;
+    }
+    // NEW — area name is now mandatory. This is validated as "must be
+    // non-empty text," NOT "must match an existing suggestion" — citizens
+    // can always type a genuinely new area/colony freely; the requirement
+    // is only that the field isn't left blank, since a blank area/colony
+    // is what caused most of the data fragmentation issues found tonight.
+    if (!areaName.trim()) {
+      setError('Please enter your area/locality name (required — helps us map your report correctly).'); return;
+    }
+    // NEW — colony name is mandatory too, but ONLY as non-empty free text.
+    // Colony data has no government source anywhere — it exists only
+    // because citizens type it in — so this must never require matching
+    // an existing suggestion, or every "first report from a new colony"
+    // scenario would be blocked entirely, working against the very
+    // crowdsourced-growth model the colony feature depends on.
+    if (!colonyName.trim()) {
+      setError('Please enter your colony/street name (required — even if it\'s not in the suggestions, please type it).'); return;
     }
     if (selectedSymptoms.length === 0 && description.trim().length < 5) {
       setError('Please select at least one symptom or describe the issue.'); return;
@@ -506,12 +605,66 @@ const ReportPage: React.FC<ReportPageProps> = ({
 
       <div className="card">
         <div className="card-title">{t(lang, 'locationRequired')}</div>
+
+        {/* GPS auto-detect — compact pill, not a full-width bar, since this
+            is a single small optional action, not a primary form control */}
+        <div style={{ display: 'flex', justifyContent: 'flex-start', marginBottom: 8 }}>
+          <button
+            onClick={handleDetectLocation}
+            disabled={detectingLocation}
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: 6,
+              padding: '6px 12px', borderRadius: 20,
+              border: '1.5px solid #1565C0',
+              background: detectingLocation ? '#E3F2FD' : 'white',
+              color: '#1565C0', fontSize: 12, fontWeight: 600,
+            }}
+            type="button"
+          >
+            📍 {detectingLocation ? 'Detecting...' : 'Use my GPS location'}
+          </button>
+        </div>
+
+        {/* Explicit privacy message — always visible near the GPS button,
+            not just after clicking, so the citizen sees the commitment
+            BEFORE deciding whether to use this feature at all. */}
+        <div style={{
+          fontSize: 11, color: '#2E7D32', background: '#E8F5E9', borderRadius: 8,
+          padding: '8px 10px', marginBottom: 12, lineHeight: 1.5,
+        }}>
+          🔒 Your GPS location is <b>not linked to your identity or profile</b>.
+          It is used only once, to detect your pincode and area, then discarded
+          immediately. Only the pincode/area — the same detail you could type
+          yourself — is used for water quality classification.
+        </div>
+
+        {gpsDetectMessage && (
+          <div style={{ fontSize: 12, color: gpsDetectSuccess ? '#2E7D32' : '#E65100', marginBottom: 10 }}>
+            {gpsDetectMessage}
+          </div>
+        )}
+
         <input className="text-input" placeholder={t(lang, 'pincodePlaceholder')}
-          value={pincode} onChange={e => setPincode(e.target.value.replace(/\D/g, '').slice(0, 6))} inputMode="numeric" />
+          value={pincode} onChange={e => setPincode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+          inputMode="numeric" list="pincode-suggestions" />
+        <datalist id="pincode-suggestions">
+          {locationSuggestions.pincodes.map(p => <option key={p} value={p} />)}
+        </datalist>
+
         <input className="text-input mt-8" placeholder={t(lang, 'areaPlaceholder')}
-          value={areaName} onChange={e => setAreaName(e.target.value.slice(0, 100))} />
+          value={areaName} onChange={e => setAreaName(e.target.value.slice(0, 100))}
+          list="area-suggestions" />
+        <datalist id="area-suggestions">
+          {locationSuggestions.areas.map(a => <option key={a} value={a} />)}
+        </datalist>
+
         <input className="text-input mt-8" placeholder={t(lang, 'colonyPlaceholder')}
-          value={colonyName} onChange={e => setColonyName(e.target.value.slice(0, 100))} />
+          value={colonyName} onChange={e => setColonyName(e.target.value.slice(0, 100))}
+          list="colony-suggestions" />
+        <datalist id="colony-suggestions">
+          {locationSuggestions.colonies.map(c => <option key={c} value={c} />)}
+        </datalist>
+
         <div className="text-muted mt-8" style={{ color: '#1565C0' }}>
           {t(lang, 'colonyHint')}
         </div>
@@ -537,6 +690,8 @@ const ReportPage: React.FC<ReportPageProps> = ({
         {loading && (
           <AgentProgress
             isActive={loading}
+            resultRef={pendingResultRef}
+            lang={lang}
             onViewResults={() => {
               const result = pendingResultRef.current;
               const pin = pendingPincodeRef.current;

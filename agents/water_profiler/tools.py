@@ -32,7 +32,9 @@ project_root = Path(__file__).parent.parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-from rag.query import query_knowledge_base
+# NOTE: query_knowledge_base is imported LAZILY inside
+# retrieve_water_quality_knowledge() below, not at module level here —
+# calculate_quality_score() has zero dependency on RAG/ChromaDB.
 
 
 def retrieve_water_quality_knowledge(
@@ -42,6 +44,7 @@ def retrieve_water_quality_knowledge(
 ) -> dict:
     """Retrieve relevant water quality knowledge from BIS/WHO/CGWB RAG knowledge base."""
     try:
+        from rag.query import query_knowledge_base  # lazy — only this function needs ChromaDB
         chunks = query_knowledge_base(
             symptoms=symptoms,
             source_type=source_type,
@@ -257,6 +260,35 @@ LONG_TERM_ACTIONS = {
 }
 
 
+def _classify_contaminant_type(indicator: str, label: str) -> str | None:
+    """
+    Maps a matched symptom/contaminant INDICATOR ID to its underlying
+    contaminant TYPE (sewage/black/iron/h2s/high_tds), independent of its
+    numeric severity score. This is what allows category selection to be
+    decided SEPARATELY from score selection.
+
+    FIXED: previously matched against the full descriptive LABEL text (e.g.
+    "Vessel staining over time — hardness/iron indicator, delayed onset"),
+    which caused a real bug — vessel_staining's own descriptive note
+    happens to mention "iron" as context, causing it to be misclassified
+    as the iron contaminant type even though it's a distinct symptom. Now
+    matches against the explicit indicator ID only, via a precise lookup
+    table — never fuzzy-searching prose that may incidentally contain
+    another contaminant's name as explanatory text.
+    """
+    INDICATOR_TO_TYPE = {
+        "sewage_smell": "sewage", "sewage_contamination": "sewage",
+        "coliform": "sewage", "e_coli": "sewage",
+        "cholera": "sewage", "typhoid": "sewage",
+        "black_colour": "black", "dark_water": "black", "manganese": "black",
+        "iron": "iron", "yellow_colour": "iron", "fe": "iron",
+        "h2s": "h2s", "egg_smell": "h2s", "hydrogen_sulphide": "h2s",
+        "high_tds": "high_tds", "white_deposits": "high_tds",
+        "salty_taste": "high_tds", "metallic_taste": "high_tds",
+    }
+    return INDICATOR_TO_TYPE.get(indicator)
+
+
 def calculate_quality_score(
     contaminants: list[str],
     severity: str,
@@ -298,8 +330,20 @@ def calculate_quality_score(
     # here — it's handled as its own explicit, higher-urgency category below,
     # never inferred via keyword matching against free text.
 
-    candidate_scores = []       # list of (score, drinking_status, bathing_status, label, triggered_by)
+    candidate_scores = []       # list of (score, drinking_status, bathing_status, label, contaminant_type)
     deductions_log = []         # human-readable breakdown for UI, now with provenance
+
+    # FIXED: baseline is now ALWAYS included as a candidate in the worst-signal
+    # comparison below, not just used as a fallback when zero symptoms exist.
+    # Previously, the moment ANY symptom was reported, the baseline was
+    # excluded entirely from consideration — meaning a real measured TDS of
+    # 700ppm (fixed score 85) could score BETTER than reporting nothing at
+    # all (baseline 65 for borewell), since 85 was never compared against 65.
+    # Now the baseline competes on equal footing with every reported symptom,
+    # so "worst signal wins" genuinely means worst signal, always including
+    # "no news is better than this specific finding" as a real possibility.
+    baseline_drink_status = "safe" if baseline >= 80 else ("caution" if baseline >= 60 else "unsafe")
+    candidate_scores.append((baseline, baseline_drink_status, "safe", f"{source_type or 'unspecified'} source baseline", None))
 
     # ── Diagnosed disease — its OWN category, not folded into generic coliform ──
     # This is treated as MORE urgent than a sensory report, not less — a confirmed
@@ -307,7 +351,7 @@ def calculate_quality_score(
     # Requires the frontend to send this as an explicit boolean, never inferred
     # from free-text keyword matching (which previously caused false positives).
     if diagnosed_disease:
-        candidate_scores.append((0, "unsafe", "unsafe", "Doctor-confirmed water-borne disease diagnosis"))
+        candidate_scores.append((0, "unsafe", "unsafe", "Doctor-confirmed water-borne disease diagnosis", "medical_emergency"))
         deductions_log.append({
             "factor": "Doctor diagnosed Cholera/Typhoid/Dysentery",
             "points": -100,
@@ -322,7 +366,12 @@ def calculate_quality_score(
         entry = CONTAMINANT_SEVERITY.get(indicator)
         if entry and entry[0] is not None:
             score_val, drink_status, bath_status, label = entry
-            candidate_scores.append((score_val, drink_status, bath_status, label))
+            # NEW — 5th tuple element tags the ACTUAL contaminant type this
+            # symptom represents, independent of whether it numerically wins
+            # the score comparison. This is what lets category selection be
+            # decided separately from score selection (see below).
+            contaminant_type = _classify_contaminant_type(indicator, label)
+            candidate_scores.append((score_val, drink_status, bath_status, label, contaminant_type))
             deductions_log.append({
                 "factor": label,
                 "points": score_val - 100,
@@ -337,7 +386,7 @@ def calculate_quality_score(
         if tds_result["deduction"] > 0:
             tds_score = 100 - tds_result["deduction"]
             candidate_scores.append((
-                tds_score, tds_result["drinking_status"], tds_result["bathing_status"], tds_result["label"]
+                tds_score, tds_result["drinking_status"], tds_result["bathing_status"], tds_result["label"], "high_tds"
             ))
             deductions_log.append({
                 "factor": tds_result["label"],
@@ -348,7 +397,7 @@ def calculate_quality_score(
             matched_any_fixed = True
     elif "white_deposits" in all_indicators or pipe_deposits:
         # No exact TDS number given, but deposits reported — assume moderate tier
-        candidate_scores.append((78, "caution", "caution", "White deposits reported — TDS likely 500-900 ppm range"))
+        candidate_scores.append((78, "caution", "caution", "White deposits reported — TDS likely 500-900 ppm range", "high_tds"))
         deductions_log.append({
             "factor": "White deposits on taps (TDS not measured)",
             "points": -22,
@@ -364,7 +413,7 @@ def calculate_quality_score(
     ]
     if vague_symptoms_present and not matched_any_fixed:
         vague_score = baseline - VAGUE_SYMPTOM_DEDUCTION
-        candidate_scores.append((vague_score, "caution", "safe", "Salty/bitter/metallic taste — mild mineral indicator"))
+        candidate_scores.append((vague_score, "caution", "safe", "Salty/bitter/metallic taste — mild mineral indicator", "high_tds"))
         deductions_log.append({
             "factor": "Salty/bitter/metallic taste (no confirmed TDS)",
             "points": -VAGUE_SYMPTOM_DEDUCTION,
@@ -405,7 +454,7 @@ def calculate_quality_score(
         sick_score = baseline - base_sick_deduction
         severity_summary = ", ".join(severity_note_parts) if severity_note_parts else "details not specified"
 
-        candidate_scores.append((sick_score, "unsafe", "caution", "Frequent sickness / stomach pains reported"))
+        candidate_scores.append((sick_score, "unsafe", "caution", "Frequent sickness / stomach pains reported", None))
         deductions_log.append({
             "factor": "Frequent sickness / stomach pains in household",
             "points": -base_sick_deduction,
@@ -415,7 +464,7 @@ def calculate_quality_score(
 
     if algae_in_filters or tank_sludge:
         tank_score = baseline - 30
-        candidate_scores.append((tank_score, "unsafe", "caution", "Tank sludge / algae in filters detected"))
+        candidate_scores.append((tank_score, "unsafe", "caution", "Tank sludge / algae in filters detected", None))
         deductions_log.append({
             "factor": "Tank sludge / algae in filters",
             "points": -30,
@@ -424,15 +473,41 @@ def calculate_quality_score(
         })
 
     # ── Determine final score: LOWEST wins (worst signal) ───────────────────
+    STATUS_SEVERITY = {"safe": 0, "caution": 1, "unsafe": 2}  # for picking the WORST status
+
+    # Baseline is now ALWAYS a candidate (added earlier), so candidate_scores
+    # can never actually be empty — but the else branch is kept as a
+    # defensive fallback in case this function is ever called in a way that
+    # bypasses that guarantee.
     if candidate_scores:
         best_match = min(candidate_scores, key=lambda x: x[0])
-        final_score, drinking_status, bathing_status, primary_label = best_match
+        final_score, _, _, primary_label, _ = best_match
+
+        drinking_status = max((c[1] for c in candidate_scores), key=lambda s: STATUS_SEVERITY[s])
+        bathing_status = max((c[2] for c in candidate_scores), key=lambda s: STATUS_SEVERITY[s])
+
+        # NEW (Option B): category is determined by scanning ALL candidates
+        # for a real, identified contaminant TYPE — independent of which
+        # candidate numerically won the score. If sickness or tank-sludge
+        # (contaminant_type=None) happens to produce the worst score, but a
+        # real contaminant (e.g. egg_smell -> "h2s") was ALSO reported, the
+        # category correctly stays tied to that actual contaminant rather
+        # than silently falling through to a generic default just because
+        # the non-specific signal happened to win on numbers.
+        identified_contaminant_types = [c[4] for c in candidate_scores if c[4] is not None]
+        # Priority order when multiple distinct contaminant types are present:
+        # most severe/urgent first
+        TYPE_PRIORITY = ["medical_emergency", "sewage", "black", "iron", "h2s", "high_tds"]
+        contaminant_category = next(
+            (t for t in TYPE_PRIORITY if t in identified_contaminant_types), None
+        )
     else:
         # Nothing reported — pure baseline holds
         final_score = baseline
         drinking_status = "safe" if baseline >= 80 else ("caution" if baseline >= 60 else "unsafe")
         bathing_status = "safe"
         primary_label = f"No contaminants reported — {source_type or 'unspecified source'} baseline"
+        contaminant_category = None
         deductions_log.append({
             "factor": "No significant contaminants detected",
             "points": 0,
@@ -446,18 +521,24 @@ def calculate_quality_score(
     # Medical emergency (confirmed diagnosis) takes priority over generic
     # sewage/contaminant categories — a confirmed disease case needs medical
     # care as the FIRST instruction, not water-source troubleshooting first.
+    # FIXED: previously inferred purely from the numeric score RANGE (e.g.
+    # "score <= 30 and drink=unsafe/bathe=safe -> assume iron"), which made
+    # unsupported specific claims — a citizen who never reported yellow
+    # water could see "iron exceeds BIS limit of 0.3 mg/L" purely because
+    # their score happened to land in the same numeric range iron produces.
+    # Now traces back to the ACTUAL primary_label that won the min() above,
+    # so the category — and its advisory text — only ever claims what the
+    # citizen actually reported.
+    # NEW: category now comes directly from the independent contaminant-type
+    # scan done above (Option B) — checked across ALL reported symptoms,
+    # not just whichever one happened to win the score comparison. Only
+    # falls to "default" if genuinely no contaminant type was identified
+    # anywhere in the report (e.g. sickness/tank-sludge alone, no specific
+    # contaminant symptom present at all).
     if diagnosed_disease:
         primary_category = "medical_emergency"
-    elif final_score <= 0:
-        primary_category = "sewage"
-    elif final_score <= 12:
-        primary_category = "black"
-    elif final_score <= 30 and drinking_status == "unsafe" and bathing_status == "safe":
-        primary_category = "iron"
-    elif final_score <= 50 and drinking_status == "unsafe" and bathing_status == "safe":
-        primary_category = "h2s"
-    elif tds_value and tds_value > 500:
-        primary_category = "high_tds"
+    elif contaminant_category:
+        primary_category = contaminant_category
     else:
         primary_category = "default"
 
@@ -473,6 +554,29 @@ def calculate_quality_score(
     else:
         colour_band, band_label = "red", "CRITICAL — Stop All Use"
 
+    # NEW: when landing in "default" specifically because sickness/tank
+    # issues were the driving factor (no actual contaminant identified),
+    # append sickness-aware guidance dynamically — rather than editing the
+    # static IMMEDIATE_ACTIONS["default"] list, which would otherwise show
+    # this same sickness-specific advice even to citizens who never
+    # reported any sickness at all.
+    immediate_actions_final = list(IMMEDIATE_ACTIONS.get(primary_category, IMMEDIATE_ACTIONS["default"]))
+    long_term_actions_final = list(LONG_TERM_ACTIONS.get(primary_category, LONG_TERM_ACTIONS["default"]))
+    sickness_was_driving_factor = (
+        primary_category == "default"
+        and (frequent_sickness or "stomach_issues" in all_indicators)
+    )
+    if sickness_was_driving_factor:
+        immediate_actions_final.insert(0,
+            "🏥 Your household reported recurring illness — while no specific "
+            "contaminant was clearly identified from your description, this "
+            "is a genuine health signal. Consider a medical consultation."
+        )
+        long_term_actions_final.append(
+            "Get water tested at a NABL-certified lab even without a visible "
+            "contaminant — some issues (e.g. bacterial contamination) have no smell or colour."
+        )
+
     return {
         "quality_score": final_score,
         "colour_band": colour_band,
@@ -484,8 +588,8 @@ def calculate_quality_score(
         "drinking_status": drinking_status,   # "safe" | "caution" | "unsafe"
         "bathing_status": bathing_status,     # "safe" | "caution" | "unsafe"
         "primary_category": primary_category,
-        "immediate_actions": IMMEDIATE_ACTIONS.get(primary_category, IMMEDIATE_ACTIONS["default"]),
-        "long_term_actions": LONG_TERM_ACTIONS.get(primary_category, LONG_TERM_ACTIONS["default"]),
+        "immediate_actions": immediate_actions_final,
+        "long_term_actions": long_term_actions_final,
         "score_breakdown": {
             "baseline": baseline,
             "source_type": source_type or "unspecified",

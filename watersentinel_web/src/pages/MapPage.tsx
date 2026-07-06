@@ -12,12 +12,10 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import LeafletMap from '../components/LeafletMap';
-import { getTopologyData, TopologyPoint, getBandColour } from '../api/watersentinel';
-import { t, Lang } from '../i18n/translations';
+import { getTopologyData, getAvailableLocations, TopologyPoint, getBandColour } from '../api/watersentinel';
 
 interface MapPageProps {
   onReportFromMap?: (pincode: string, areaName: string, colonyName?: string) => void;
-  lang?: Lang;
 }
 
 const CONTAMINANT_FILTERS = ['All', 'High TDS', 'Iron', 'H2S', 'Fecal Coliform'];
@@ -129,20 +127,34 @@ function groupByArea(points: TopologyPoint[]): AreaGroup[] {
   return result.sort((a, b) => a.worstScore - b.worstScore);
 }
 
-const MapPage: React.FC<MapPageProps> = ({ onReportFromMap, lang = 'en' }) => {
+const MapPage: React.FC<MapPageProps> = ({ onReportFromMap }) => {
   const [topologyData, setTopologyData] = useState<TopologyPoint[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedArea, setSelectedArea] = useState<TopologyPoint | null>(null);
   const [lastUpdated, setLastUpdated] = useState('');
   const [contaminantFilter, setContaminantFilter] = useState('All');
-  const [timeFilter, setTimeFilter] = useState('Today');
+  // FIXED: previously defaulted to 'Today', which now that the time
+  // filter is genuinely functional, correctly shows almost nothing for
+  // seed/test data spread across multiple days — making the app LOOK
+  // broken on first load, when actually "Today" was just doing exactly
+  // what it says. Defaulting to 'Last 30d' shows the full realistic
+  // picture on load, with "Today" available as a deliberate narrowing
+  // choice rather than a misleading default.
+  const [timeFilter, setTimeFilter] = useState('Last 30d');
   const [sourceFilter, setSourceFilter] = useState('all');
+  const [stateFilter, setStateFilter] = useState('all');
+  const [cityFilter, setCityFilter] = useState('all');
+  const [availableLocations, setAvailableLocations] = useState<{ states: string[]; cities: string[] }>({ states: [], cities: [] });
   const [expandedAreas, setExpandedAreas] = useState<Set<string>>(new Set());
 
-  const loadTopology = useCallback(async (source: string = sourceFilter) => {
+  const TIME_FILTER_DAYS: Record<string, number | undefined> = {
+    'Today': 1, 'Last 7d': 7, 'Last 30d': 30,
+  };
+
+  const loadTopology = useCallback(async (source: string = sourceFilter, timeF: string = timeFilter, st: string = stateFilter, ct: string = cityFilter) => {
     setLoading(true);
     try {
-      const data = await getTopologyData(source);
+      const data = await getTopologyData(source, TIME_FILTER_DAYS[timeF], st, ct);
       setTopologyData(data);
       setLastUpdated(new Date().toLocaleTimeString());
     } catch (err) {
@@ -150,9 +162,25 @@ const MapPage: React.FC<MapPageProps> = ({ onReportFromMap, lang = 'en' }) => {
     } finally {
       setLoading(false);
     }
-  }, [sourceFilter]);
+  }, [sourceFilter, timeFilter, stateFilter, cityFilter]);
 
-  useEffect(() => { loadTopology(sourceFilter); }, [sourceFilter]);
+  useEffect(() => { loadTopology(sourceFilter, timeFilter, stateFilter, cityFilter); }, [sourceFilter, timeFilter, stateFilter, cityFilter]);
+
+  // FIXED: previously fetched ALL cities once, on mount, regardless of
+  // which state was selected — meaning selecting "Telangana" still showed
+  // "Kanpur" as a city option, since the two dropdowns had no real
+  // relationship. Now re-fetches whenever stateFilter changes, so the
+  // City list is genuinely narrowed to that state's real cities.
+  useEffect(() => {
+    getAvailableLocations(stateFilter).then(setAvailableLocations);
+  }, [stateFilter]);
+
+  const handleTimeFilterChange = (tf: string) => {
+    setTimeFilter(tf);
+    // FIXED: previously this only changed button styling with zero effect
+    // on displayed data — "Today" and "Last 30d" showed identical results.
+    // Now genuinely re-queries the backend with the real day-range filter.
+  };
 
   const handleSourceChange = (source: string) => {
     setSourceFilter(source);
@@ -177,35 +205,87 @@ const MapPage: React.FC<MapPageProps> = ({ onReportFromMap, lang = 'en' }) => {
     });
   };
 
+  // FIXED: now that primary_contaminant is written in one canonical,
+  // comma-separated format (via normalize_contaminant on the backend),
+  // this checks for an EXACT label match within the comma-separated list —
+  // not a fragile substring search. Previously "Fecal Coliform" (with a
+  // space) never matched "Fecal_Coliform" (stored with an underscore) —
+  // that inconsistency is now eliminated at the data layer, so this filter
+  // can safely do an exact, not fuzzy, comparison.
   const filteredData = contaminantFilter === 'All'
     ? topologyData
-    : topologyData.filter(p =>
-        (p.primary_contaminant || '').toLowerCase()
-          .includes(contaminantFilter.replace('High ', '').toLowerCase())
-      );
+    : topologyData.filter(p => {
+        const labels = (p.primary_contaminant || '').split(',').map(s => s.trim().toLowerCase());
+        return labels.includes(contaminantFilter.toLowerCase());
+      });
 
   const redCount = topologyData.filter(p => p.colour_band === 'red').length;
   const totalReports = topologyData.reduce((sum, p) => sum + (p.report_count || 0), 0);
   const areaGroups = groupByArea(filteredData);
 
-  const authorityAlerts = topologyData
-    .filter(p => p.colour_band === 'red' && p.report_count >= 2)
-    .slice(0, 3)
-    .map(p => ({ area: p.area_name, action: getSourceAction(p.primary_contaminant || '') }));
+  // FIXED: previously sliced the top 3 red-band ROWS without deduplicating
+  // by area — when one area (e.g. Kondapur) has multiple red-band colonies,
+  // all 3 alert slots showed the same area name 3 times. Now dedupes to
+  // one alert per unique area, showing the specific colony that triggered
+  // it for context, and only moves to a different area once each area's
+  // worst colony has been represented.
+  const seenAreas = new Set<string>();
+  const authorityAlerts: { area: string; colony: string; action: string }[] = [];
+  for (const p of topologyData) {
+    if (p.colour_band !== 'red' || p.report_count < 2) continue;
+    if (seenAreas.has(p.area_name)) continue;
+    seenAreas.add(p.area_name);
+    authorityAlerts.push({
+      area: p.area_name,
+      colony: p.colony_name && p.colony_name !== 'Unspecified' ? p.colony_name : '',
+      action: getSourceAction(p.primary_contaminant || ''),
+    });
+    if (authorityAlerts.length >= 3) break;
+  }
 
   const currentSourceLabel = SOURCE_FILTERS.find(s => s.id === sourceFilter)?.label || 'All Sources';
 
   return (
     <div>
 
-      {/* Slim metadata bar */}
+      {/* NEW — State & City Filter moved to the TOP, above the header, so
+          the displayed region name always reflects a choice already made
+          rather than appearing disconnected from filters below it. Only
+          shown once reports exist across multiple cities/states —
+          otherwise the "All" default keeps single-city usage unchanged. */}
+      {(availableLocations.states.length > 1 || availableLocations.cities.length > 1) && (
+        <div style={{ padding: '10px 16px', background: '#FFFFFF', borderBottom: '1px solid #E0E0E0', display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#555' }}>
+            State:
+            <select value={stateFilter} onChange={e => { setStateFilter(e.target.value); setCityFilter('all'); }}
+              style={{ border: '1px solid #E0E0E0', borderRadius: 6, padding: '4px 8px', fontSize: 12 }}>
+              <option value="all">All States</option>
+              {availableLocations.states.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#555' }}>
+            City:
+            <select value={cityFilter} onChange={e => setCityFilter(e.target.value)}
+              style={{ border: '1px solid #E0E0E0', borderRadius: 6, padding: '4px 8px', fontSize: 12 }}>
+              <option value="all">All Cities</option>
+              {availableLocations.cities.map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </label>
+        </div>
+      )}
+
+      {/* Slim metadata bar — header now DYNAMIC, reflecting the actual
+          State/City selection above, instead of a hardcoded "Hyderabad"
+          that was disconnected from whatever filter was actually active. */}
       <div className="map-meta-bar">
         <div>
-          <div className="map-meta-location">🗺️ {t(lang, 'citizenReports')}</div>
+          <div className="map-meta-location">
+            🗺️ {cityFilter !== 'all' ? cityFilter : stateFilter !== 'all' ? stateFilter : 'All India'} — Citizen Reports
+          </div>
           <div style={{ display: 'flex', gap: 16, marginTop: 4 }}>
-            <span style={{ fontSize: 12, color: '#555' }}>📍 <b style={{ color: '#1A237E' }}>{areaGroups.length}</b> {t(lang, 'statAreas')}</span>
-            <span style={{ fontSize: 12, color: '#555' }}>🔴 <b style={{ color: '#B71C1C' }}>{redCount}</b> {t(lang, 'statCritical')}</span>
-            <span style={{ fontSize: 12, color: '#555' }}>📊 <b style={{ color: '#1A237E' }}>{totalReports}</b> {t(lang, 'statReports')}</span>
+            <span style={{ fontSize: 12, color: '#555' }}>📍 <b style={{ color: '#1A237E' }}>{areaGroups.length}</b> Areas</span>
+            <span style={{ fontSize: 12, color: '#555' }}>🔴 <b style={{ color: '#B71C1C' }}>{redCount}</b> Critical</span>
+            <span style={{ fontSize: 12, color: '#555' }}>📊 <b style={{ color: '#1A237E' }}>{totalReports}</b> Reports</span>
           </div>
         </div>
         <div className="map-meta-updated">
@@ -218,15 +298,15 @@ const MapPage: React.FC<MapPageProps> = ({ onReportFromMap, lang = 'en' }) => {
       <div style={{ background: '#FFF8E1', padding: '10px 16px', borderBottom: '1px solid #FFE082', display: 'flex', alignItems: 'center', gap: 10 }}>
         <span style={{ fontSize: 20 }}>🔔</span>
         <div style={{ flex: 1 }}>
-          <div style={{ fontSize: 13, fontWeight: 600, color: '#F57F17' }}>{t(lang, 'communityHealthAlert')}</div>
-          <div style={{ fontSize: 12, color: '#555' }}>{t(lang, 'geofencingActive')}</div>
+          <div style={{ fontSize: 13, fontWeight: 600, color: '#F57F17' }}>Community Health Alert Bar</div>
+          <div style={{ fontSize: 12, color: '#555' }}>Proactive Geo-fencing Alerts Active: Your area is being monitored</div>
         </div>
       </div>
 
       {/* Source Type Filter */}
       <div style={{ padding: '10px 16px', background: '#FAFBFF', borderBottom: '2px solid #1565C0' }}>
         <div style={{ fontSize: 12, fontWeight: 700, color: '#1A237E', marginBottom: 8 }}>
-          {t(lang, 'filterBySource')}
+          💧 Filter by Water Source
         </div>
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
           {SOURCE_FILTERS.map(sf => (
@@ -257,16 +337,16 @@ const MapPage: React.FC<MapPageProps> = ({ onReportFromMap, lang = 'en' }) => {
       {/* Filter row */}
       <div style={{ padding: '10px 16px', background: 'white', borderBottom: '1px solid #E0E0E0' }}>
         <div style={{ display: 'flex', gap: 6, marginBottom: 8, alignItems: 'center' }}>
-          <span style={{ fontSize: 12, color: '#555' }}>{t(lang, 'filter')}</span>
+          <span style={{ fontSize: 12, color: '#555' }}>Filter:</span>
           {TIME_FILTERS.map(tf => (
-            <button key={tf} onClick={() => setTimeFilter(tf)}
+            <button key={tf} onClick={() => handleTimeFilterChange(tf)}
               style={{ padding: '4px 10px', borderRadius: 12, fontSize: 12, border: 'none',
                 background: timeFilter === tf ? '#1565C0' : '#F5F5F5', color: timeFilter === tf ? 'white' : '#555' }}
               type="button">{tf}</button>
           ))}
         </div>
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
-          <span style={{ fontSize: 12, color: '#555' }}>{t(lang, 'contaminants')}</span>
+          <span style={{ fontSize: 12, color: '#555' }}>Contaminants:</span>
           {CONTAMINANT_FILTERS.map(cf => (
             <button key={cf} onClick={() => setContaminantFilter(cf)}
               style={{ padding: '4px 10px', borderRadius: 12, fontSize: 12, border: 'none',
@@ -295,10 +375,10 @@ const MapPage: React.FC<MapPageProps> = ({ onReportFromMap, lang = 'en' }) => {
       {/* Authority Alerts */}
       {authorityAlerts.length > 0 && (
         <div style={{ background: '#FFF3E0', padding: '10px 16px', borderBottom: '1px solid #FFE082' }}>
-          <div style={{ fontSize: 13, fontWeight: 700, color: '#E65100', marginBottom: 6 }}>{t(lang, 'authorityAlerts')}</div>
+          <div style={{ fontSize: 13, fontWeight: 700, color: '#E65100', marginBottom: 6 }}>🏛️ GHMC Authority Action Alerts</div>
           {authorityAlerts.map((alert, i) => (
             <div key={i} style={{ fontSize: 12, color: '#555', marginBottom: 3 }}>
-              Alert {i + 1}: {alert.area} ({alert.action})
+              Alert {i + 1}: {alert.area}{alert.colony ? ` — ${alert.colony}` : ''} ({alert.action})
             </div>
           ))}
         </div>
@@ -334,7 +414,7 @@ const MapPage: React.FC<MapPageProps> = ({ onReportFromMap, lang = 'en' }) => {
               style={{ marginTop: 10, fontSize: 13, color: '#1565C0', fontWeight: 600 }}
               type="button"
             >
-              {t(lang, 'reportIssueHere')}
+              + Report issue in this area →
             </button>
           )}
         </div>
@@ -344,7 +424,7 @@ const MapPage: React.FC<MapPageProps> = ({ onReportFromMap, lang = 'en' }) => {
       {!loading && areaGroups.length > 0 && (
         <div style={{ padding: '0 12px' }}>
           <div className="text-muted" style={{ padding: '8px 4px', fontWeight: 600 }}>
-            {t(lang, 'recentActivity')} {sourceFilter !== 'all' && `— ${currentSourceLabel}`}
+            Recent Activity {sourceFilter !== 'all' && `— ${currentSourceLabel}`}
           </div>
           {areaGroups.slice(0, 12).map((group, i) => {
             const { icon, color } = getContaminantDisplay(
@@ -382,7 +462,7 @@ const MapPage: React.FC<MapPageProps> = ({ onReportFromMap, lang = 'en' }) => {
                       {group.areaName}
                       {hasMultipleColonies && (
                         <span style={{ fontSize: 10, color: '#1565C0', background: '#E3F2FD', borderRadius: 8, padding: '1px 7px' }}>
-                          {group.colonies.length} {group.colonies.length === 1 ? t(lang, 'colony') : t(lang, 'colonies')} {isExpanded ? '▲' : '▼'}
+                          {group.colonies.length} {group.colonies.length === 1 ? 'colony' : 'colonies'} {isExpanded ? '▲' : '▼'}
                         </span>
                       )}
                     </div>
@@ -430,7 +510,7 @@ const MapPage: React.FC<MapPageProps> = ({ onReportFromMap, lang = 'en' }) => {
                           </div>
                           <div style={{ flex: 1, minWidth: 0 }}>
                             <div style={{ fontSize: 13, fontWeight: 600, color: '#333' }}>
-                              {colony.colony_name && colony.colony_name !== 'Unspecified' ? colony.colony_name : t(lang, 'generalAreaReport')}
+                              {colony.colony_name && colony.colony_name !== 'Unspecified' ? colony.colony_name : 'General area report'}
                             </div>
                             <div style={{ fontSize: 10, color: '#888' }}>
                               {readableContaminant(colony.primary_contaminant || '')} · {colony.report_count} report{colony.report_count !== 1 ? 's' : ''}

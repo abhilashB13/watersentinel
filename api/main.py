@@ -56,6 +56,10 @@ except ImportError:
 from api.routers.report import router as report_router
 from api.routers.map_data import router as map_router
 from api.routers.health import router as health_router
+from api.routers.feedback import router as feedback_router
+from api.routers.local_services import router as local_services_router
+from api.routers.geolocation import router as geolocation_router
+from api.routers.location_suggestions import router as location_suggestions_router
 
 # ── Rate Limiter Setup ─────────────────────────────────────────────────────────
 
@@ -153,6 +157,10 @@ app.add_middleware(
 app.include_router(health_router)          # GET /health
 app.include_router(report_router)          # POST /report
 app.include_router(map_router)             # GET /map/topology, /map/pincode/{pincode}
+app.include_router(feedback_router)        # POST /feedback, GET /feedback/summary
+app.include_router(local_services_router)  # GET /local-services
+app.include_router(geolocation_router)     # GET /geolocation/reverse
+app.include_router(location_suggestions_router)  # GET /location-suggestions
 
 # ── Root Endpoint ──────────────────────────────────────────────────────────────
 

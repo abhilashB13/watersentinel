@@ -177,15 +177,25 @@ def update_topology_score_internal(
     for row in rows:
         try:
             contaminants = json.loads(row["contaminants"] or "[]")
-            all_contaminants.extend(contaminants)
+            if isinstance(contaminants, list):
+                all_contaminants.extend(contaminants)
+            elif contaminants:
+                all_contaminants.append(contaminants)
         except (json.JSONDecodeError, TypeError):
-            pass
+            # Raw value wasn't valid JSON — treat as a single plain string
+            if row["contaminants"]:
+                all_contaminants.append(row["contaminants"])
 
-    primary_contaminant = (
-        max(set(all_contaminants), key=all_contaminants.count)
-        if all_contaminants
-        else "None"
-    )
+    # FIXED: previously used max(set(...), key=count) directly on raw,
+    # inconsistently-formatted strings (mix of 'Iron', 'iron_colour',
+    # '["H2S"]' etc.) — this is what caused the same real-world condition
+    # to fragment into multiple topology_scores rows purely due to string
+    # format differences, and caused filter chips like "Fecal Coliform" to
+    # never match anything since the stored format didn't match the chip's
+    # search text. Now routes through normalize_contaminant(), the ONE
+    # canonical classifier used everywhere in the codebase.
+    from mcp_servers.contaminant_classifier import normalize_contaminant
+    primary_contaminant = normalize_contaminant(all_contaminants)
 
     conn.execute("""
         INSERT OR REPLACE INTO topology_scores

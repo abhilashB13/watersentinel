@@ -28,6 +28,8 @@ project_root = Path(__file__).parent.parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
+from agents.water_profiler.error_classifier import classify_error
+
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["report"])
 
@@ -38,8 +40,16 @@ INITIAL_BACKOFF = 5
 class WaterReportRequest(BaseModel):
     user_message: str = Field(..., min_length=5, max_length=1000)
     pincode: str = Field(..., min_length=6, max_length=6)
-    area_name: str = Field(default="", max_length=100)
-    colony_name: str = Field(default="", max_length=100)
+    # NEW — area_name and colony_name are now REQUIRED (min_length=1), not
+    # optional. Frontend enforces this too, but backend validation is the
+    # real safety net — client-side checks can always be bypassed by a
+    # direct API call, and every data-fragmentation bug found tonight
+    # traced back to blank/inconsistent location fields being allowed
+    # through. Colony remains free-text (no matching-against-suggestions
+    # requirement) — see location_canonicalizer.py for how new colony
+    # names are still handled gracefully without being blocked.
+    area_name: str = Field(..., min_length=1, max_length=100)
+    colony_name: str = Field(..., min_length=1, max_length=100)
     source_type: str = Field(default="")
     symptoms: list[str] = Field(default=[])
     photo_base64: str = Field(default="")
@@ -110,6 +120,9 @@ class WaterReportResponse(BaseModel):
     rag_source: str = Field(default="")
     mcp_calls: list[str] = Field(default=[])
     score_deductions: list[dict] = Field(default=[])
+    voice_extracted_symptoms: list[dict] = Field(default=[])
+    photo_analysis: dict | None = Field(default=None)
+    primary_category: str = Field(default="default")
     source_baseline: int = Field(default=60)
 
 
@@ -170,15 +183,25 @@ async def run_pipeline(request: WaterReportRequest, session_id: str) -> dict:
             break
         except Exception as e:
             error_str = str(e)
-            if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str:
+            error_class = classify_error(error_str)
+            if error_class == "retry_backoff":
                 if attempt < MAX_RETRIES - 1:
-                    logger.warning(f"429 attempt {attempt+1}. Waiting {backoff}s...")
+                    logger.warning(f"Retryable error (attempt {attempt+1}): {error_str[:100]}. Waiting {backoff}s...")
                     await asyncio.sleep(backoff)
                     backoff *= 2
                 else:
                     return {"error": error_str, "fallback": True}
-            else:
+            elif error_class == "fail_fast":
+                # 400/401/403/404 — will never succeed on retry, go straight to fallback
+                logger.warning(f"Fail-fast error, no retry: {error_str[:100]}")
                 return {"error": error_str, "fallback": True}
+            else:
+                # Unknown error type — one conservative retry, not the full backoff sequence
+                if attempt == 0:
+                    logger.warning(f"Unclassified error, single retry: {error_str[:100]}")
+                    await asyncio.sleep(3)
+                else:
+                    return {"error": error_str, "fallback": True}
 
     session = await session_service.get_session(
         app_name="watersentinel", user_id=user_id, session_id=session_id,
@@ -241,6 +264,8 @@ def _score_from_symptoms(request: WaterReportRequest) -> dict:
     """
     try:
         from agents.water_profiler.tools import calculate_quality_score, IMMEDIATE_ACTIONS, LONG_TERM_ACTIONS
+        from agents.water_profiler.symptom_extractor import extract_symptoms_from_text
+        from agents.water_profiler.photo_analyzer import analyze_water_photo, photo_findings_to_symptoms
 
         # FIXED: use structured booleans directly from the request — these
         # come from actual questionnaire checkbox state, not keyword-matched
@@ -252,6 +277,32 @@ def _score_from_symptoms(request: WaterReportRequest) -> dict:
         frequent_sick = request.frequent_sickness
         algae = request.algae_in_filters
         tank_sludge = request.tank_sludge
+
+        # NEW — real symptom extraction from voice transcript / typed
+        # description. Uses word-boundary-safe regex matching against a
+        # known vocabulary (see symptom_extractor.py) — NOT the naive
+        # substring matching that caused the earlier false-positive bug.
+        # Extracted symptoms are merged with manually-selected chips, and
+        # each extracted match records the exact phrase that triggered it
+        # for transparency in the score breakdown.
+        voice_extracted = extract_symptoms_from_text(request.user_message)
+        voice_extracted_ids = [m["symptom_id"] for m in voice_extracted]
+
+        # NEW — real Gemini Vision photo analysis. This is a genuine API
+        # call, not a fallback — requires working quota. If it fails
+        # (quota exhausted, no key, unparseable response), photo_analysis
+        # records that analysis was attempted but did not succeed, so the
+        # UI can be honest about this rather than silently ignoring the
+        # photo. On success, detected visual symptoms are merged into
+        # scoring using the exact same severity table as manual/voice input.
+        photo_analysis = analyze_water_photo(request.photo_base64) if request.photo_base64 else None
+        photo_extracted_ids = photo_findings_to_symptoms(photo_analysis) if photo_analysis else []
+
+        # Merge manual chip selections with voice/text-extracted AND
+        # photo-detected symptoms, de-duplicated, preserving provenance
+        # for the "triggered_by" transparency field downstream.
+        manual_symptoms = list(request.symptoms or [])
+        merged_symptoms = list(dict.fromkeys(manual_symptoms + voice_extracted_ids + photo_extracted_ids))
 
         tds_value = request.tds_value
         if tds_value is None:
@@ -272,7 +323,7 @@ def _score_from_symptoms(request: WaterReportRequest) -> dict:
             algae_in_filters=algae,
             tank_sludge=tank_sludge,
             tds_value=tds_value,
-            symptoms=request.symptoms,
+            symptoms=merged_symptoms,
             affected_count=request.affected_count,
             since_when=request.since_when,
         )
@@ -283,6 +334,10 @@ def _score_from_symptoms(request: WaterReportRequest) -> dict:
         score = result["quality_score"]  # already rounded int from tools.py
         band = result["colour_band"]
 
+        # Static dict kept ONLY as true infra fallback (if ChromaDB itself
+        # fails to load — corrupted index, missing file). This does NOT
+        # need Gemini/quota — local sentence-transformers embeddings only —
+        # so we ALWAYS attempt the real retrieval first.
         RAG_CITATIONS = {
             "sewage":   "BIS IS 10500:2012, Sec 4.2 — Faecal Coliform limit: 0 MPN/100mL",
             "black":    "BIS IS 10500:2012, Sec 4.3 — Manganese limit: 0.1 mg/L",
@@ -291,7 +346,38 @@ def _score_from_symptoms(request: WaterReportRequest) -> dict:
             "high_tds": "BIS IS 10500:2012 + WHO 2022 — Tiered TDS: 300/500/900/1200/2000 ppm thresholds",
             "default":  "BIS IS 10500:2012 — General water quality parameters",
         }
-        rag_source = RAG_CITATIONS.get(category, RAG_CITATIONS["default"])
+        try:
+            from rag.query import query_knowledge_base
+            chunks = query_knowledge_base(
+                symptoms=merged_symptoms, source_type=request.source_type or "",
+                location_context=request.area_name or "", top_k=1,
+            )
+            rag_source = chunks[0]["citation"] if chunks else RAG_CITATIONS.get(category, RAG_CITATIONS["default"])
+        except Exception as rag_err:
+            logger.warning(f"RAG retrieval failed, using static citation fallback: {rag_err}")
+            rag_source = RAG_CITATIONS.get(category, RAG_CITATIONS["default"])
+
+        # NEW — canonicalize area/colony names against EXISTING entries
+        # before storage. Autocomplete only suggests existing values, it
+        # cannot stop a citizen from typing a near-duplicate anyway (e.g.
+        # "lingampally" lowercase, or a slight misspelling). This catches
+        # that at write time, auto-correcting to the existing canonical
+        # spelling when a close fuzzy match is found, rather than creating
+        # a second fragmented entry for the same real place.
+        raw_area = request.area_name or request.pincode
+        try:
+            from mcp_servers.location_canonicalizer import canonicalize_area_name, canonicalize_colony_name
+            canonical_area_name = canonicalize_area_name(request.pincode, raw_area)
+            canonical_colony_name = (
+                canonicalize_colony_name(request.pincode, canonical_area_name, request.colony_name)
+                if request.colony_name else ""
+            )
+        except Exception:
+            # Canonicalization is a quality-of-life improvement, not a
+            # correctness requirement — if it fails for any reason, fall
+            # back to the raw input rather than blocking the report.
+            canonical_area_name = raw_area
+            canonical_colony_name = request.colony_name or ""
 
         cluster_detected = False
         cluster_count = 0
@@ -300,7 +386,6 @@ def _score_from_symptoms(request: WaterReportRequest) -> dict:
 
         try:
             from mcp_servers.water_intel_store import get_cluster_status, submit_report
-            mcp_calls.append("WaterIntel Store → submit_report()")
             # FIXED: previously called with only pincode, meaning it counted
             # across ALL colonies and ALL source types in that pincode —
             # this is what caused the inflated "28 other households" alert,
@@ -309,23 +394,37 @@ def _score_from_symptoms(request: WaterReportRequest) -> dict:
             cluster = get_cluster_status(
                 request.pincode, days=7, colony_name=request.colony_name or None
             )
+            # FIXED: badge now appended AFTER the call succeeds, not before —
+            # previously "submit_report()" badge was appended preemptively
+            # before that function was even called, meaning a thrown
+            # exception would still show a false "success" badge to the UI.
             mcp_calls.append("WaterIntel Store → get_cluster_status()")
             cluster_detected = cluster.get("cluster_detected", False)
             cluster_count = cluster.get("count", 0)
             if cluster_detected:
-                area = cluster.get("area_name", request.area_name or request.pincode)
-                contaminants_found = cluster.get("contaminants_found", [])
-                contaminant_str = " and ".join(contaminants_found[:2]) if contaminants_found else "similar water issues"
+                area = cluster.get("area_name", canonical_area_name)
+                # FIXED (Option A): previously named the OTHER households'
+                # specific contaminants (e.g. "reported Milky Appearance and
+                # Metallic Taste") even when they didn't match what THIS
+                # citizen reported — reading as if it were evidence for
+                # their own case when it wasn't. Now stays honest about
+                # this being a geography-based signal covering POSSIBLY
+                # varying symptoms, not a symptom-matched confirmation —
+                # while still preserving the broader detection value: a
+                # shared contaminated source can legitimately produce
+                # different symptom reports from different households.
                 community_alert = (
                     f"{cluster_count} other households in {area} reported "
-                    f"{contaminant_str} this week. This appears to be a "
-                    f"community supply issue — not just your home."
+                    f"water quality concerns this week (symptoms may vary). "
+                    f"This may indicate a shared source issue — not just your home."
                 )
             submit_report(
-                pincode=request.pincode, area_name=request.area_name or request.pincode,
+                pincode=request.pincode, area_name=canonical_area_name,
+                colony_name=canonical_colony_name,
                 source_type=request.source_type or "borewell", quality_score=score, colour_band=band,
-                contaminants=request.symptoms, symptoms=request.symptoms, lat=0.0, lng=0.0,
+                contaminants=merged_symptoms, symptoms=merged_symptoms, lat=0.0, lng=0.0,
             )
+            mcp_calls.append("WaterIntel Store → submit_report()")
         except Exception:
             pass
 
@@ -344,14 +443,27 @@ def _score_from_symptoms(request: WaterReportRequest) -> dict:
                 authority_name = authority.get("name", "")
                 authority_email = authority.get("email", "")
                 authority_portal = authority.get("portal", "")
-                complaint = generate_municipal_complaint(
-                    area=request.area_name or request.pincode, pincode=request.pincode,
-                    contaminants=request.symptoms, affected_count=cluster_count,
-                    source_type=request.source_type, bis_references=["BIS IS 10500:2012"],
-                    symptoms=request.symptoms,
-                )
-                mcp_calls.append("ActionBridge → generate_municipal_complaint()")
-                complaint_draft = complaint.get("complaint_text", "")
+                try:
+                    complaint = generate_municipal_complaint(
+                        area=request.area_name or request.pincode, pincode=request.pincode,
+                        contaminants=merged_symptoms, affected_count=cluster_count,
+                        source_type=request.source_type, bis_references=["BIS IS 10500:2012"],
+                        symptoms=merged_symptoms,
+                    )
+                    mcp_calls.append("ActionBridge → generate_municipal_complaint()")
+                    complaint_draft = complaint.get("complaint_text", "")
+                except Exception as complaint_err:
+                    # Gemini-formatted complaint failed (quota/network) — fall
+                    # back to a plain-Python template using the same structured
+                    # data, so the citizen NEVER sees a silently blank complaint.
+                    logger.warning(f"Gemini complaint generation failed, using template: {complaint_err}")
+                    from mcp_servers.action_bridge import generate_template_complaint
+                    complaint_draft = generate_template_complaint(
+                        area=request.area_name or request.pincode, pincode=request.pincode,
+                        contaminants=merged_symptoms, affected_count=cluster_count,
+                        source_type=request.source_type, authority_name=authority_name,
+                    )
+                    mcp_calls.append("ActionBridge → generate_template_complaint() [fallback]")
                 escalation_required = True
             except Exception:
                 pass
@@ -370,6 +482,9 @@ def _score_from_symptoms(request: WaterReportRequest) -> dict:
             "rag_source": rag_source, "mcp_calls": mcp_calls,
             "score_deductions": result.get("score_breakdown", {}).get("deductions", []),
             "source_baseline": result.get("score_breakdown", {}).get("baseline", 60),
+            "voice_extracted_symptoms": voice_extracted,  # for UI transparency
+            "photo_analysis": photo_analysis,  # None if no photo, or the full honest result dict
+            "primary_category": category,
         }
     except Exception as e:
         return {"error": str(e)}
@@ -396,6 +511,9 @@ def _fallback_response(session_id: str, request: WaterReportRequest, error: str)
             full_response=f"Direct scoring active. Pipeline: {error[:100]}",
             rag_source=scored["rag_source"], mcp_calls=scored["mcp_calls"],
             score_deductions=scored["score_deductions"],
+            voice_extracted_symptoms=scored.get("voice_extracted_symptoms", []),
+            photo_analysis=scored.get("photo_analysis"),
+            primary_category=scored.get("primary_category", "default"),
             source_baseline=scored["source_baseline"],
         )
 

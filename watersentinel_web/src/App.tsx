@@ -19,6 +19,16 @@ type Tab = 'home' | 'map' | 'report' | 'about';
 const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<Tab>('home'); // Home is default
   const [reportResult, setReportResult] = useState<WaterReportResponse | null>(null);
+
+  // FIXED: scroll position was not resetting between views — this app
+  // switches views via React state (activeTab), not real browser
+  // navigation, so the browser has no built-in reason to reset scroll
+  // position. Clicking "View My Results" (or any tab) previously kept
+  // whatever scroll position the citizen was at on the PREVIOUS view,
+  // landing mid-page instead of at the top of the new one.
+  React.useEffect(() => {
+    window.scrollTo(0, 0);
+  }, [activeTab, reportResult]);
   const [resultPincode, setResultPincode] = useState('');
   const [prefillPincode, setPrefillPincode] = useState('');
   const [prefillArea, setPrefillArea] = useState('');

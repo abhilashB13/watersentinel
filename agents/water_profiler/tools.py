@@ -561,6 +561,25 @@ def calculate_quality_score(
     # this same sickness-specific advice even to citizens who never
     # reported any sickness at all.
     immediate_actions_final = list(IMMEDIATE_ACTIONS.get(primary_category, IMMEDIATE_ACTIONS["default"]))
+
+    # FIXED: static per-category action text (e.g. h2s/iron templates say
+    # "SAFE FOR BATHING") is disconnected from the ACTUAL bathing_status
+    # computed above via worst-case-across-all-symptoms — a co-reported
+    # symptom like skin_irritation can correctly set bathing_status=unsafe
+    # while primary_category still resolves to h2s/iron, producing a
+    # contradiction: badge says Unsafe, action text says Safe. Remove any
+    # stale bathing-safety line from the static template and prepend the
+    # one that actually matches bathing_status for this specific report.
+    immediate_actions_final = [
+        line for line in immediate_actions_final
+        if "SAFE FOR BATHING" not in line.upper() and "SAFE TO BATHE" not in line.upper()
+    ]
+    if bathing_status == "unsafe":
+        immediate_actions_final.insert(0, "🚨 Do NOT bathe with this water either — unsafe for both drinking and bathing")
+    elif bathing_status == "caution":
+        immediate_actions_final.insert(0, "⚠️ Bathing not acutely dangerous, but prolonged use may cause skin/hair irritation")
+    else:
+        immediate_actions_final.insert(0, "✅ Water is SAFE FOR BATHING")
     long_term_actions_final = list(LONG_TERM_ACTIONS.get(primary_category, LONG_TERM_ACTIONS["default"]))
     sickness_was_driving_factor = (
         primary_category == "default"
